@@ -152,30 +152,11 @@ class FCN2VGG:
                                              num_classes=num_classes)
         self.fuse_pool3 = tf.add(self.upscore4, self.score_pool3)
 
-        # FCN-2
-        self.upscore8 = self._upscore_layer(self.fuse_pool3,
-                                            shape=tf.shape(self.pool2),
-                                            num_classes=num_classes,
-                                            debug=debug, name='upscore8',
-                                            ksize=4, stride=2)
-        self.score_pool2 = self._score_layer(self.pool2, "score_pool2",
-                                             num_classes=num_classes)
-        self.fuse_pool2 = tf.add(self.upscore8, self.score_pool2)
-
-        self.upscore16 = self._upscore_layer(self.fuse_pool2,
-                                            shape=tf.shape(self.pool1),
-                                            num_classes=num_classes,
-                                            debug=debug, name='upscore16',
-                                            ksize=4, stride=2)
-        self.score_pool1 = self._score_layer(self.pool1, "score_pool1",
-                                             num_classes=num_classes)
-        self.fuse_pool1 = tf.add(self.upscore16, self.score_pool1)
-
-        self.upscore32 = self._upscore_layer(self.fuse_pool1,
+        self.upscore32 = self._upscore_layer(self.fuse_pool3,
                                              shape=tf.shape(bgr),
                                              num_classes=num_classes,
                                              debug=debug, name='upscore32',
-                                             ksize=4, stride=2)
+                                             ksize=16, stride=8)
 
         # self.pred_up = tf.argmax(self.upscore32, dimension=3)
         # self.pred_up = tf.nn.softmax(self.upscore32)
