@@ -45,19 +45,18 @@ class FCN2VGG:
         self.var = stats[1, :]
         print(self.var)
 
-        self.alpha = 0.5
-        # self.alpha = None
+        # self.alpha = 0.5
+        self.alpha = None
 
-    def build(self, rgb, train=False, num_classes=2, random_init_fc8=False,
-              debug=False):
+    def build(self, rgb, keepProbability, num_classes=2, random_init_fc8=True, debug=False):
         """
         Build the VGG model using loaded weights
         Parameters
         ----------
         rgb: image batch tensor
             Image in rgb shap. Scaled to Intervall [0, 255]
-        train: bool
-            Whether to build train or inference graph
+        keepProbability: Neuron keep probability
+            Keep probability of neurons in dropout (< 1 during training and 1 at test time)
         num_classes: int
             How many classes should be predicted (by fc8)
         random_init_fc8 : bool
@@ -116,13 +115,10 @@ class FCN2VGG:
         self.pool5 = self._max_pool(self.conv5_3, 'pool5', debug)
 
         self.fc6 = self._fc_layer(self.pool5, "fc6")
-
-        if train:
-            self.fc6 = tf.nn.dropout(self.fc6, 0.5)
+        self.fc6 = tf.nn.dropout(self.fc6, keepProbability)
 
         self.fc7 = self._fc_layer(self.fc6, "fc7")
-        if train:
-            self.fc7 = tf.nn.dropout(self.fc7, 0.5)
+        self.fc7 = tf.nn.dropout(self.fc7, keepProbability)
 
         if random_init_fc8:
             self.score_fr = self._score_layer(self.fc7, "score_fr",

@@ -48,6 +48,7 @@ parser.add_option("--outputGraphName", action="store", type="string", dest="outp
 
 # Network Params
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=2, help="Number of classes")
+parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
 
 # Parse command line options
 (options, args) = parser.parse_args()
@@ -66,13 +67,14 @@ if options.trainModel:
 		# Data placeholders
 		inputBatchImages = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, 3], name="inputBatchImages")
 		inputBatchLabels = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, options.numClasses], name="inputBatchLabels")
+		inputKeepProbability = tf.placeholder(dtype=tf.float32, name="inputKeepProbability")
 
 	vgg_fcn = fcn2_vgg.FCN2VGG(batchSize = options.batchSize, statsFile=options.statsFileName, enableTensorboardVisualization=options.tensorboardVisualization)
 
 	with tf.name_scope('Model'):
 		# Construct model
-		vgg_fcn.build(inputBatchImages, train=(not options.testModel),
-			num_classes=options.numClasses, random_init_fc8=True, debug=(options.verbose > 0))
+		vgg_fcn.build(inputBatchImages, inputKeepProbability, num_classes=options.numClasses, 
+						random_init_fc8=True, debug=(options.verbose > 0))
 
 	with tf.name_scope('Loss'):
 		# Define loss
@@ -184,7 +186,7 @@ if options.trainModel:
 				break
 
 			# Run optimization op (backprop)
-			_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
+			_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
 			
 			if options.tensorboardVisualization:
 				# Write logs at every iteration
@@ -193,14 +195,14 @@ if options.trainModel:
 			if step % options.displayStep == 0:
 				# Calculate batch loss
 				# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
-				[trainLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
+				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1})
 
 				# print "Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss)
 				print "Iter " + str(step) + ", Minibatch Loss= ", trainLoss
 
 				# Save image results
 				print "Saving images"
-				inputReader.saveLastBatchResults(testImagesProbabilityMap, isTrain=True)
+				inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
 			step += 1
 
 			if step % options.saveStep == 0:
@@ -215,11 +217,11 @@ if options.trainModel:
 				batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 
 				if options.evaluateStepDontSaveImages:
-					[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest})
+					[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
 					print "Test loss:", testLoss
 
 				else:
-					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest})
+					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
 					print "Test loss:", testLoss
 
 					# Save image results
@@ -301,12 +303,13 @@ if options.testModel:
 		# sess.run(tf.initialize_all_variables())
 		outputNode = session.graph.get_tensor_by_name("Model/probabilities:0")
 		inputBatchImages = session.graph.get_tensor_by_name("FCN_VGG/inputBatchImages:0")
+		inputKeepProbability = session.graph.get_tensor_by_name("VGG/inputKeepProbability:0")
 
 		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 		batchImagesTest = batchImagesTest[0:1, :, :, :]
 		batchLabelsTest = batchLabelsTest[0:1, :, :, :]
 		startTime = dt.datetime.now()
-		output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest})
+		output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1})
 		print "Output shape:", output.shape
 		endTime = dt.datetime.now()
 
