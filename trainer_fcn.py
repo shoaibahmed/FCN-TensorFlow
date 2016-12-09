@@ -186,11 +186,12 @@ if options.trainModel:
 				break
 
 			# Run optimization op (backprop)
-			_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
-			
 			if options.tensorboardVisualization:
+				_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
 				# Write logs at every iteration
 				summaryWriter.add_summary(summary, step)
+			else:
+				_ = sess.run([applyGradients], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
 
 			if step % options.displayStep == 0:
 				# Calculate batch loss
@@ -232,7 +233,7 @@ if options.trainModel:
 				# if step % options.saveStepBest == 0:
 				# 	# Report loss on test data
 				# 	batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-				# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest})
+				# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
 				# 	print "Test loss:", testLoss
 
 				# 	# If its the best loss achieved so far, save the model
@@ -244,6 +245,10 @@ if options.trainModel:
 				# 	else:
 				# 		print "Previous best accuracy: ", bestLoss
 
+		# Save final model weights to disk
+		saver.save(sess, options.checkpointDir + 'model.ckpt', global_step = step)
+		print "Model saved in file: %s" % options.checkpointDir
+		lastSaveStep = step
 
 		# Write Graph to file
 		print "Writing Graph to File"
@@ -267,7 +272,7 @@ if options.trainModel:
 
 		# Report loss on test data
 		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest})
+		testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
 		print "Test loss (current):", testLoss
 
 		print "Optimization Finished!"
@@ -279,7 +284,7 @@ if options.trainModel:
 
 		# # Report loss on test data
 		# batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest})
+		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
 		# print "Test loss (best model):", testLoss
 
 # Test model
