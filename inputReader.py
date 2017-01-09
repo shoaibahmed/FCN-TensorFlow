@@ -50,8 +50,8 @@ class InputReader:
 				maskImageName = maskImageName[:-lastSlashIndex] + 'mask' + maskImageName[-11:-6] + maskImageName[-4:]
 			
 			if self.options.verbose > 1:
-				print "Image:", fileNames[i]
-				print "Mask:", maskImageName
+				print ("Image: %s" % fileNames[i])
+				print ("Mask: %s" % maskImageName)
 
 			# Read image
 			img = skimage.io.imread(fileNames[i])
@@ -79,7 +79,7 @@ class InputReader:
 		Returns:
 		  Two 4-D numpy arrays: training images and masks in batch.
 		"""
-		print "Training epochs completed:", self.totalEpochs + (float(self.currentIndex) / self.totalImages)
+		print ("Training epochs completed: %f" % (self.totalEpochs + (float(self.currentIndex) / self.totalImages)))
 		
 		if self.totalEpochs >= self.options.trainingEpochs:
 			return None, None

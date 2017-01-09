@@ -52,7 +52,7 @@ parser.add_option("--neuronAliveProbability", action="store", type="float", dest
 
 # Parse command line options
 (options, args) = parser.parse_args()
-print options
+print (options)
 
 # bestCheckpointDir = options.checkpointDir + "best_model/"
 # checkpointPrefix = os.path.join(bestCheckpointDir, "saved_checkpoint")
@@ -120,7 +120,7 @@ if options.trainModel:
 if options.trainModel:
 	with tf.Session() as sess:
 		if options.loadModel:
-			print "Loading"
+			print ("Loading")
 
 			# Restore Graph
 			with gfile.FastGFile(options.graphDir + options.outputGraphName, 'rb') as f:
@@ -129,7 +129,7 @@ if options.trainModel:
 				sess.graph.as_default()
 				tf.import_graph_def(graphDef, name='')
 
-				print "Graph Loaded"
+				print ("Graph Loaded")
 
 			saver = tf.train.Saver(tf.all_variables())  # defaults to saving all variables - in this case w and b
 
@@ -137,13 +137,13 @@ if options.trainModel:
 			ckpt = tf.train.get_checkpoint_state(options.checkpointDir)
 			if ckpt and ckpt.model_checkpoint_path:
 				saver.restore(sess, ckpt.model_checkpoint_path)
-				print "Model loaded Successfully!"
+				print ("Model loaded Successfully!")
 			else:
-				print "Model not found"
+				print ("Model not found")
 				exit()
 
 		if options.startTrainingFromScratch:
-			print "Removing previous checkpoints and logs"
+			print ("Removing previous checkpoints and logs")
 			os.system("rm -rf " + options.checkpointDir)
 			os.system("rm -rf " + options.logsDir)
 			os.system("rm -rf " + options.imagesOutputDirectory)
@@ -155,10 +155,10 @@ if options.trainModel:
 			ckpt = tf.train.get_checkpoint_state(options.checkpointDir)
 			if ckpt and ckpt.model_checkpoint_path:
 				saver.restore(sess, ckpt.model_checkpoint_path)
-				print(ckpt.model_checkpoint_path)
-				print "Checkpoint loaded Successfully!"
+				print (ckpt.model_checkpoint_path)
+				print ("Checkpoint loaded Successfully!")
 			else:
-				print "Checkpoint not found"
+				print ("Checkpoint not found")
 				exit()
 
 			# Restore iteration number
@@ -171,18 +171,17 @@ if options.trainModel:
 			# Op for writing logs to Tensorboard
 			summaryWriter = tf.train.SummaryWriter(options.logsDir, graph=tf.get_default_graph())
 
-		print "Starting network training"
+		print ("Starting network training")
 		sess.run(init)
 
 		# Keep training until reach max iterations
 		while True:
 			batchImagesTrain, batchLabelsTrain = inputReader.getTrainBatch()
-			# print "Batch shapes:"
-			# print (batchImagesTrain.shape)
-			# print (batchLabelsTrain.shape)
+			# print ("Batch images shape: %s, Batch labels shape: %s" % (batchImagesTrain.shape, batchLabelsTrain.shape))
+
 			# If training iterations completed
 			if batchImagesTrain is None:
-				print "Training completed"
+				print ("Training completed")
 				break
 
 			# Run optimization op (backprop)
@@ -198,18 +197,18 @@ if options.trainModel:
 				# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
 				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1})
 
-				# print "Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss)
-				print "Iter " + str(step) + ", Minibatch Loss= ", trainLoss
+				# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
+				print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
 				# Save image results
-				print "Saving images"
+				print ("Saving images")
 				inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
 			step += 1
 
 			if step % options.saveStep == 0:
 				# Save model weights to disk
 				saver.save(sess, options.checkpointDir + 'model.ckpt', global_step = step)
-				print "Model saved in file: %s" % options.checkpointDir
+				print ("Model saved in file: %s" % options.checkpointDir)
 				lastSaveStep = step
 
 			#Check the accuracy on test data
@@ -219,14 +218,14 @@ if options.trainModel:
 
 				if options.evaluateStepDontSaveImages:
 					[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
-					print "Test loss:", testLoss
+					print ("Test loss: %f" % testLoss)
 
 				else:
 					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
-					print "Test loss:", testLoss
+					print ("Test loss: %f" % testLoss)
 
 					# Save image results
-					print "Saving images"
+					print ("Saving images")
 					inputReader.saveLastBatchResults(testImagesProbabilityMap, isTrain=False)
 
 				# #Check the accuracy on test data
@@ -234,24 +233,24 @@ if options.trainModel:
 				# 	# Report loss on test data
 				# 	batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 				# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
-				# 	print "Test loss:", testLoss
+				# 	print ("Test loss: %f" % testLoss)
 
 				# 	# If its the best loss achieved so far, save the model
 				# 	if testLoss < bestLoss:
 				# 		bestLoss = testLoss
 				# 		# bestModelSaver.save(sess, best_checkpoint_dir + 'checkpoint.data')
 				# 		bestModelSaver.save(sess, checkpointPrefix, global_step=0, latest_filename=checkpointStateName)
-				# 		print "Best model saved in file: %s" % checkpointPrefix
+				# 		print ("Best model saved in file: %s" % checkpointPrefix)
 				# 	else:
-				# 		print "Previous best accuracy: ", bestLoss
+				# 		print ("Previous best accuracy: %f" % bestLoss)
 
 		# Save final model weights to disk
 		saver.save(sess, options.checkpointDir + 'model.ckpt', global_step = step)
-		print "Model saved in file: %s" % options.checkpointDir
+		print ("Model saved in file: %s" % options.checkpointDir)
 		lastSaveStep = step
 
 		# Write Graph to file
-		print "Writing Graph to File"
+		print ("Writing Graph to File")
 		os.system("rm -rf " + options.graphDir)
 		tf.train.write_graph(sess.graph_def, options.graphDir, options.inputGraphName, as_text=False) #proto
 
@@ -273,9 +272,9 @@ if options.trainModel:
 		# Report loss on test data
 		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 		testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
-		print "Test loss (current):", testLoss
+		print ("Test loss (current): %f" % testLoss)
 
-		print "Optimization Finished!"
+		print ("Optimization Finished!")
 
 		# # Report accuracy on test data using best fitted model
 		# ckpt = tf.train.get_checkpoint_state(options.checkpointDir)
@@ -285,11 +284,11 @@ if options.trainModel:
 		# # Report loss on test data
 		# batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
-		# print "Test loss (best model):", testLoss
+		# print ("Test loss (best model): %f" % testLoss)
 
 # Test model
 if options.testModel:
-	print "Testing saved Graph"
+	print ("Testing saved Graph")
 	outputGraphPath = options.graphDir + options.outputGraphName
 	# Now we make sure the variable is now a constant, and that the graph still produces the expected result.
 	with tf.Session() as session:
@@ -300,10 +299,10 @@ if options.testModel:
 			_ = tf.import_graph_def(outputGraphDef, name="")
 
 		# Print all variables in graph
-		print "Printing all variable names"
+		print ("Printing all variable names")
 		allVars = outputGraphDef.node
 		for node in allVars:
-			print node.name
+			print (node.name)
 	
 		# sess.run(tf.initialize_all_variables())
 		outputNode = session.graph.get_tensor_by_name("Model/probabilities:0")
@@ -315,11 +314,11 @@ if options.testModel:
 		batchLabelsTest = batchLabelsTest[0:1, :, :, :]
 		startTime = dt.datetime.now()
 		output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1})
-		print "Output shape:", output.shape
+		print ("Output shape: %s" % (x.shape,))
 		endTime = dt.datetime.now()
 
-		print "Time consumed in executing graph:", ((endTime.microsecond - startTime.microsecond) / 1e6)
+		print ("Time consumed in executing graph: %f" % ((endTime.microsecond - startTime.microsecond) / 1e6))
 
 		# assert(len(output) == len(options.batchSize))
 
-	print "Graph tested"
+	print ("Graph tested")

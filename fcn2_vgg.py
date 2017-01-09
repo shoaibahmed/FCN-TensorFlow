@@ -39,11 +39,11 @@ class FCN2VGG:
         self.enableTensorboardVisualization = enableTensorboardVisualization
 
         # Load image statistics file
-        stats = np.loadtxt(statsFile)
-        self.mean = stats[0, :]
-        print(self.mean)
-        self.var = stats[1, :]
-        print(self.var)
+        # stats = np.loadtxt(statsFile)
+        # self.mean = stats[0, :]
+        # print(self.mean)
+        # self.var = stats[1, :]
+        # print(self.var)
 
         # self.alpha = 0.5
         self.alpha = None
@@ -75,16 +75,16 @@ class FCN2VGG:
             # assert red.get_shape().as_list()[1:] == [224, 224, 1]
             # assert green.get_shape().as_list()[1:] == [224, 224, 1]
             # assert blue.get_shape().as_list()[1:] == [224, 224, 1]
-            # bgr = tf.concat(3, [
-            #     blue - VGG_MEAN[0],
-            #     green - VGG_MEAN[1],
-            #     red - VGG_MEAN[2],
-            # ])
             bgr = tf.concat(3, [
-                (blue - self.mean[0]) / self.var[0],
-                (green - self.mean[1]) / self.var[1],
-                (red - self.mean[2]) / self.var[2],
+                blue - VGG_MEAN[0],
+                green - VGG_MEAN[1],
+                red - VGG_MEAN[2],
             ])
+            # bgr = tf.concat(3, [
+            #     (blue - self.mean[0]) / self.var[0],
+            #     (green - self.mean[1]) / self.var[1],
+            #     (red - self.mean[2]) / self.var[2],
+            # ])
 
             if debug:
                 bgr = tf.Print(bgr, [tf.shape(bgr)],
