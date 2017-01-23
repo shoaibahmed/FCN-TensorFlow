@@ -31,7 +31,7 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-6, help="Learning rate")
-parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=10, help="Training epochs")
+parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=50, help="Training epochs")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=5, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=20, help="Progress display step")
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
@@ -92,7 +92,8 @@ if options.trainModel:
 		applyGradients = optimizer.apply_gradients(grads_and_vars=gradients)
 
 	# Initializing the variables
-	init = tf.initialize_all_variables()
+	# init = tf.initialize_all_variables()
+	init = tf.global_variables_initializer() # TensorFlow v0.11
 
 	if options.tensorboardVisualization:
 		# Create a summary to monitor cost tensor
@@ -119,6 +120,9 @@ if options.trainModel:
 # Train model
 if options.trainModel:
 	with tf.Session() as sess:
+		# Initialize all variables
+		sess.run(init)
+
 		if options.loadModel:
 			print ("Loading")
 
@@ -172,8 +176,7 @@ if options.trainModel:
 			summaryWriter = tf.train.SummaryWriter(options.logsDir, graph=tf.get_default_graph())
 
 		print ("Starting network training")
-		sess.run(init)
-
+		
 		# Keep training until reach max iterations
 		while True:
 			batchImagesTrain, batchLabelsTrain = inputReader.getTrainBatch()
@@ -217,11 +220,11 @@ if options.trainModel:
 				batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 
 				if options.evaluateStepDontSaveImages:
-					[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
+					[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 					print ("Test loss: %f" % testLoss)
 
 				else:
-					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
+					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 					print ("Test loss: %f" % testLoss)
 
 					# Save image results
@@ -232,7 +235,7 @@ if options.trainModel:
 				# if step % options.saveStepBest == 0:
 				# 	# Report loss on test data
 				# 	batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-				# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
+				# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 				# 	print ("Test loss: %f" % testLoss)
 
 				# 	# If its the best loss achieved so far, save the model
@@ -271,7 +274,7 @@ if options.trainModel:
 
 		# Report loss on test data
 		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
+		testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 		print ("Test loss (current): %f" % testLoss)
 
 		print ("Optimization Finished!")
@@ -283,7 +286,7 @@ if options.trainModel:
 
 		# # Report loss on test data
 		# batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1})
+		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 		# print ("Test loss (best model): %f" % testLoss)
 
 # Test model
@@ -313,7 +316,7 @@ if options.testModel:
 		batchImagesTest = batchImagesTest[0:1, :, :, :]
 		batchLabelsTest = batchLabelsTest[0:1, :, :, :]
 		startTime = dt.datetime.now()
-		output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1})
+		output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
 		print ("Output shape: %s" % (x.shape,))
 		endTime = dt.datetime.now()
 

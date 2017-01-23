@@ -251,21 +251,21 @@ class FCN2VGG:
             # get number of input channels
             in_features = bottom.get_shape()[3].value
             shape = [1, 1, in_features, num_classes]
-            # # He initialization Sheme
-            # if name == "score_fr":
-            #     num_input = in_features
-            #     stddev = (2 / num_input)**0.5
-            # elif name == "score_pool4":
-            #     stddev = 0.001
-            # elif name == "score_pool3":
-            #     stddev = 0.0001
-            # elif name == "score_pool2":
-            #     stddev = 0.00001
-            # elif name == "score_pool1":
-            #     stddev = 0.00001
+            # He initialization Sheme
+            if name == "score_fr":
+                num_input = in_features
+                stddev = (2 / num_input)**0.5
+            elif name == "score_pool4":
+                stddev = 0.001
+            elif name == "score_pool3":
+                stddev = 0.0001
+            elif name == "score_pool2":
+                stddev = 0.00001
+            elif name == "score_pool1":
+                stddev = 0.000001
             # Apply convolution
             w_decay = self.wd
-            weights = self._variable_with_weight_decay(shape, w_decay)
+            weights = self._variable_with_weight_decay(shape, stddev, w_decay)
             conv = tf.nn.conv2d(bottom, weights, [1, 1, 1, 1], padding='SAME')
             # Apply bias
             conv_biases = self._bias_variable([num_classes], constant=0.0)
@@ -417,7 +417,7 @@ class FCN2VGG:
                 fweight[:, :, :, start_idx:end_idx], axis=3)
         return avg_fweight
 
-    def _variable_with_weight_decay(self, shape, wd):
+    def _variable_with_weight_decay(self, shape, stddev, wd):
         """Helper to create an initialized Variable with weight decay.
 
         Note that the Variable is initialized with a truncated normal
@@ -427,18 +427,19 @@ class FCN2VGG:
         Args:
           name: name of the variable
           shape: list of ints
+          stddev: standard deviation of a truncated Gaussian
           wd: add L2Loss weight decay multiplied by this float. If None, weight
               decay is not added for this Variable.
 
         Returns:
           Variable Tensor
         """
-
-        # initializer = tf.truncated_normal_initializer(stddev=stddev)
-        # var = tf.get_variable('weights', shape=shape,
-        #                       initializer=initializer)
-        var = tf.get_variable(name="weights", shape=shape, 
-                              initializer=tf.contrib.layers.xavier_initializer())
+        
+        initializer = tf.truncated_normal_initializer(stddev=stddev)
+        var = tf.get_variable('weights', shape=shape,
+                              initializer=initializer)
+        # var = tf.get_variable(name="weights", shape=shape, 
+        #                       initializer=tf.contrib.layers.xavier_initializer())
 
         if wd and (not tf.get_variable_scope().reuse):
             weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='weight_loss')
