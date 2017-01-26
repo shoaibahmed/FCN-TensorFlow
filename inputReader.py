@@ -2,6 +2,7 @@ import os
 import numpy as np
 import skimage
 import skimage.io
+import skimage.transform
 
 class InputReader:
 	def __init__(self, options):
@@ -30,7 +31,7 @@ class InputReader:
 			fileNames.append(line.strip())
 		return fileNames
 
-	def readImagesFromDisk(self, fileNames):
+	def readImagesFromDisk(self, fileNames, readMask = True):
 		"""Consumes a list of filenames and returns image with mask
 		Args:
 		  fileNames: List of image files
@@ -55,16 +56,21 @@ class InputReader:
 
 			# Read image
 			img = skimage.io.imread(fileNames[i])
+			imgShape = [self.options.imageHeight, self.options.imageWidth, self.options.imageChannels]
+			if img.shape != imgShape:
+				img = skimage.transform.resize(img, imgShape, preserve_range=True)
+				# skimage.io.imsave('./resizedIm/' + imageName, img)
 			images.append(img)
 
 			# Read mask
-			mask = skimage.io.imread(maskImageName)
+			if readMask:
+				mask = skimage.io.imread(maskImageName)
 
-			# Convert the mask to [H, W, options.numClasses]
-			backgroundClass = (mask == 0).astype(np.uint8)
-			foregroundClass = (mask == 255).astype(np.uint8)
-			mask = np.stack([backgroundClass, foregroundClass], axis=2)
-			masks.append(mask)
+				# Convert the mask to [H, W, options.numClasses]
+				backgroundClass = (mask == 0).astype(np.uint8)
+				foregroundClass = (mask == 255).astype(np.uint8)
+				mask = np.stack([backgroundClass, foregroundClass], axis=2)
+				masks.append(mask)
 
 		# Convert list to ndarray
 		images = np.array(images)
@@ -94,7 +100,7 @@ class InputReader:
 
 		return imageBatch, maskBatch
 
-	def getTestBatch(self):
+	def getTestBatch(self, readMask = True):
 		"""Returns testing images and masks in batch
 		Args:
 		  None
@@ -103,7 +109,7 @@ class InputReader:
 		"""
 		# Optional Image and Label Batching
 		self.indices = np.random.choice(self.totalImagesTest, self.options.batchSize)
-		imageBatch, maskBatch = self.readImagesFromDisk([self.imageListTest[index] for index in self.indices])
+		imageBatch, maskBatch = self.readImagesFromDisk([self.imageListTest[index] for index in self.indices], readMask=readMask)
 		return imageBatch, maskBatch
 
 	def restoreCheckpoint(self, numSteps):

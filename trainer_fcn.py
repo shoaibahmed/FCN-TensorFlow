@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import freeze_graph
+# import freeze_graph
 import tensorflow as tf
 from tensorflow.python.platform import gfile
 from optparse import OptionParser
@@ -14,7 +14,6 @@ import loss
 parser = OptionParser()
 
 # General settings
-parser.add_option("-l", "--loadModel", action="store_true", dest="loadModel", default=False, help="Load model")
 parser.add_option("-t", "--trainModel", action="store_true", dest="trainModel", default=False, help="Train model")
 parser.add_option("-c", "--testModel", action="store_true", dest="testModel", default=False, help="Test model")
 parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
@@ -32,7 +31,7 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-6, help="Learning rate")
 parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=50, help="Training epochs")
-parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=5, help="Batch size")
+parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=7, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=20, help="Progress display step")
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
@@ -41,10 +40,9 @@ parser.add_option("--imagesOutputDirectory", action="store", type="string", dest
 
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
-parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
-parser.add_option("--graphDir", action="store", type="string", dest="graphDir", default="./graph/", help="Directory for saving graphs")
-parser.add_option("--inputGraphName", action="store", type="string", dest="inputGraphName", default="Graph_CNN.pb", help="Name of the graph to be saved")
-parser.add_option("--outputGraphName", action="store", type="string", dest="outputGraphName", default="Graph_Freezed.pb", help="Name of the graph to be loaded")
+# parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
+parser.add_option("--modelDir", action="store", type="string", dest="modelDir", default="./model/", help="Directory for saving the model")
+parser.add_option("--modelName", action="store", type="string", dest="modelName", default="vgg_fcn", help="Name to be used for saving the model")
 
 # Network Params
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=2, help="Number of classes")
@@ -53,10 +51,6 @@ parser.add_option("--neuronAliveProbability", action="store", type="float", dest
 # Parse command line options
 (options, args) = parser.parse_args()
 print (options)
-
-# bestCheckpointDir = options.checkpointDir + "best_model/"
-# checkpointPrefix = os.path.join(bestCheckpointDir, "saved_checkpoint")
-checkpointStateName = "checkpoint_state"
 
 # Import custom data
 import inputReader
@@ -115,7 +109,6 @@ if options.trainModel:
 
 	bestLoss = 1e9
 	step = 1
-	lastSaveStep = 0
 
 # Train model
 if options.trainModel:
@@ -123,53 +116,19 @@ if options.trainModel:
 		# Initialize all variables
 		sess.run(init)
 
-		if options.loadModel:
-			print ("Loading")
-
-			# Restore Graph
-			with gfile.FastGFile(options.graphDir + options.outputGraphName, 'rb') as f:
-				graphDef = tf.GraphDef()
-				graphDef.ParseFromString(f.read())
-				sess.graph.as_default()
-				tf.import_graph_def(graphDef, name='')
-
-				print ("Graph Loaded")
-
-			saver = tf.train.Saver(tf.all_variables())  # defaults to saving all variables - in this case w and b
-
-			# Restore Model
-			ckpt = tf.train.get_checkpoint_state(options.checkpointDir)
-			if ckpt and ckpt.model_checkpoint_path:
-				saver.restore(sess, ckpt.model_checkpoint_path)
-				print ("Model loaded Successfully!")
-			else:
-				print ("Model not found")
-				exit()
-
 		if options.startTrainingFromScratch:
 			print ("Removing previous checkpoints and logs")
-			os.system("rm -rf " + options.checkpointDir)
 			os.system("rm -rf " + options.logsDir)
 			os.system("rm -rf " + options.imagesOutputDirectory)
-			os.system("mkdir " + options.checkpointDir)
+			os.system("rm -rf " + options.modelDir)
 			os.system("mkdir " + options.imagesOutputDirectory)
+			os.system("mkdir " + options.modelDir)
 
 		# Restore checkpoint
 		else:
-			ckpt = tf.train.get_checkpoint_state(options.checkpointDir)
-			if ckpt and ckpt.model_checkpoint_path:
-				saver.restore(sess, ckpt.model_checkpoint_path)
-				print (ckpt.model_checkpoint_path)
-				print ("Checkpoint loaded Successfully!")
-			else:
-				print ("Checkpoint not found")
-				exit()
-
-			# Restore iteration number
-			nameComps = ckpt.model_checkpoint_path.split('-')
-			step = int(nameComps[1])
-			inputReader.restoreCheckpoint(step)
-			lastSaveStep = step
+			print ("Restoring from checkpoint")
+			saver = tf.train.import_meta_graph(options.modelName + ".meta")
+			saver.restore(sess, options.modelName)
 
 		if options.tensorboardVisualization:
 			# Op for writing logs to Tensorboard
@@ -198,7 +157,7 @@ if options.trainModel:
 			if step % options.displayStep == 0:
 				# Calculate batch loss
 				# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
-				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1})
+				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1.0})
 
 				# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
 				print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
@@ -210,9 +169,8 @@ if options.trainModel:
 
 			if step % options.saveStep == 0:
 				# Save model weights to disk
-				saver.save(sess, options.checkpointDir + 'model.ckpt', global_step = step)
-				print ("Model saved in file: %s" % options.checkpointDir)
-				lastSaveStep = step
+				saver.save(sess, options.modelDir + options.modelName)
+				print ("Model saved: %s" % (options.modelDir + options.modelName))
 
 			#Check the accuracy on test data
 			if step % options.evaluateStep == 0:
@@ -248,29 +206,28 @@ if options.trainModel:
 				# 		print ("Previous best accuracy: %f" % bestLoss)
 
 		# Save final model weights to disk
-		saver.save(sess, options.checkpointDir + 'model.ckpt', global_step = step)
-		print ("Model saved in file: %s" % options.checkpointDir)
-		lastSaveStep = step
+		saver.save(sess, options.modelDir + options.modelName)
+		print ("Model saved: %s" % (options.modelDir + options.modelName))
 
-		# Write Graph to file
-		print ("Writing Graph to File")
-		os.system("rm -rf " + options.graphDir)
-		tf.train.write_graph(sess.graph_def, options.graphDir, options.inputGraphName, as_text=False) #proto
+		# # Write Graph to file
+		# print ("Writing Graph to File")
+		# os.system("rm -rf " + options.graphDir)
+		# tf.train.write_graph(sess.graph_def, options.graphDir, options.inputGraphName, as_text=False) #proto
 
-		# We save out the graph to disk, and then call the const conversion routine.
-		inputGraphPath = options.graphDir + options.inputGraphName
-		inputSaverDefPath = ""
-		inputBinary = True
-		# inputCheckpointPath = checkpointPrefix + "-0"
-		inputCheckpointPath = options.checkpointDir + 'model.ckpt' + '-' + str(lastSaveStep)
+		# # We save out the graph to disk, and then call the const conversion routine.
+		# inputGraphPath = options.graphDir + options.inputGraphName
+		# inputSaverDefPath = ""
+		# inputBinary = True
+		# # inputCheckpointPath = checkpointPrefix + "-0"
+		# inputCheckpointPath = options.checkpointDir + 'model.ckpt' + '-' + str(lastSaveStep)
 
-		outputNodeNames = "Model/probabilities"
-		restoreOpName = "save/restore_all"
-		fileNameTensorName = "save/Const:0"
-		outputGraphPath = options.graphDir + options.outputGraphName
-		clearDevices = True
+		# outputNodeNames = "Model/probabilities"
+		# restoreOpName = "save/restore_all"
+		# fileNameTensorName = "save/Const:0"
+		# outputGraphPath = options.graphDir + options.outputGraphName
+		# clearDevices = True
 
-		freeze_graph.freeze_graph(inputGraphPath, inputSaverDefPath, inputBinary, inputCheckpointPath, outputNodeNames, restoreOpName, fileNameTensorName, outputGraphPath, clearDevices, "")
+		# freeze_graph.freeze_graph(inputGraphPath, inputSaverDefPath, inputBinary, inputCheckpointPath, outputNodeNames, restoreOpName, fileNameTensorName, outputGraphPath, clearDevices, "")
 
 		# Report loss on test data
 		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
@@ -291,37 +248,32 @@ if options.trainModel:
 
 # Test model
 if options.testModel:
-	print ("Testing saved Graph")
-	outputGraphPath = options.graphDir + options.outputGraphName
+	print ("Testing saved model")
+
+	os.system("rm -rf " + options.imagesOutputDirectory)
+	os.system("mkdir " + options.imagesOutputDirectory)
+	
 	# Now we make sure the variable is now a constant, and that the graph still produces the expected result.
 	with tf.Session() as session:
-		outputGraphDef = tf.GraphDef()
-		with open(outputGraphPath, "rb") as f:
-			outputGraphDef.ParseFromString(f.read())
-			session.graph.as_default()
-			_ = tf.import_graph_def(outputGraphDef, name="")
+		saver = tf.train.import_meta_graph(options.modelDir + options.modelName + ".meta")
+		saver.restore(session, options.modelDir + options.modelName)
 
-		# Print all variables in graph
-		print ("Printing all variable names")
-		allVars = outputGraphDef.node
-		for node in allVars:
-			print (node.name)
-	
-		# sess.run(tf.initialize_all_variables())
+		# Get reference to placeholders
 		outputNode = session.graph.get_tensor_by_name("Model/probabilities:0")
 		inputBatchImages = session.graph.get_tensor_by_name("FCN_VGG/inputBatchImages:0")
-		inputKeepProbability = session.graph.get_tensor_by_name("VGG/inputKeepProbability:0")
+		inputKeepProbability = session.graph.get_tensor_by_name("FCN_VGG/inputKeepProbability:0")
+	
+		# sess.run(tf.initialize_all_variables())
+		# Sample 10 test batches
+		numBatches = 10
+		for i in range(1, numBatches):
+			print ("Prcessing batch # %d" % i)
+			batchImagesTest, batchLabelsTest = inputReader.getTestBatch(readMask = False) # For testing on datasets without GT mask
+			# output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
+			imagesProbabilityMap = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
 
-		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		batchImagesTest = batchImagesTest[0:1, :, :, :]
-		batchLabelsTest = batchLabelsTest[0:1, :, :, :]
-		startTime = dt.datetime.now()
-		output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
-		print ("Output shape: %s" % (x.shape,))
-		endTime = dt.datetime.now()
+			# Save image results
+			print ("Saving images")
+			inputReader.saveLastBatchResults(imagesProbabilityMap, isTrain=False)
 
-		print ("Time consumed in executing graph: %f" % ((endTime.microsecond - startTime.microsecond) / 1e6))
-
-		# assert(len(output) == len(options.batchSize))
-
-	print ("Graph tested")
+	print ("Model tested")
