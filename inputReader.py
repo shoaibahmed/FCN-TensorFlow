@@ -85,8 +85,6 @@ class InputReader:
 		Returns:
 		  Two 4-D numpy arrays: training images and masks in batch.
 		"""
-		print ("Training epochs completed: %f" % (self.totalEpochs + (float(self.currentIndex) / self.totalImages)))
-		
 		if self.totalEpochs >= self.options.trainingEpochs:
 			return None, None
 
@@ -95,6 +93,7 @@ class InputReader:
 
 		self.currentIndex = self.currentIndex + self.options.batchSize
 		if self.currentIndex > self.totalImages:
+			print ("Training epochs completed: %f" % (self.totalEpochs + (float(self.currentIndex) / self.totalImages)))
 			self.currentIndex = self.currentIndex - self.totalImages
 			self.totalEpochs = self.totalEpochs + 1
 

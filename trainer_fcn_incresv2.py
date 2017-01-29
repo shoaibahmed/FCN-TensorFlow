@@ -7,8 +7,8 @@ from optparse import OptionParser
 import datetime as dt
 
 # Import FCN Model
-import fcn2_vgg
-import loss
+from inception_resnet_v2_fcn import *
+inc_res_v2_checkpoint_file = './inception_resnet_v2_2016_08_30.ckpt'
 
 # Command line options
 parser = OptionParser()
@@ -29,9 +29,9 @@ parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in image for feeding into the network")
 
 # Trainer Params
-parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-6, help="Learning rate")
-parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=50, help="Training epochs")
-parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=7, help="Batch size")
+parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
+parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=5, help="Training epochs")
+parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=2, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=20, help="Progress display step")
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
@@ -41,8 +41,8 @@ parser.add_option("--imagesOutputDirectory", action="store", type="string", dest
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
 # parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
-parser.add_option("--modelDir", action="store", type="string", dest="modelDir", default="./model/", help="Directory for saving the model")
-parser.add_option("--modelName", action="store", type="string", dest="modelName", default="vgg_fcn", help="Name to be used for saving the model")
+parser.add_option("--modelDir", action="store", type="string", dest="modelDir", default="./model-inc_res_v2/", help="Directory for saving the model")
+parser.add_option("--modelName", action="store", type="string", dest="modelName", default="inc_res_v2_fcn", help="Name to be used for saving the model")
 
 # Network Params
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=2, help="Number of classes")
@@ -57,22 +57,28 @@ import inputReader
 inputReader = inputReader.InputReader(options)
 
 if options.trainModel:
-	with tf.variable_scope('FCN_VGG'):
+	with tf.variable_scope('FCN_INC_RES_V2'):
 		# Data placeholders
 		inputBatchImages = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, 3], name="inputBatchImages")
 		inputBatchLabels = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, options.numClasses], name="inputBatchLabels")
 		inputKeepProbability = tf.placeholder(dtype=tf.float32, name="inputKeepProbability")
 
-	vgg_fcn = fcn2_vgg.FCN2VGG(batchSize = options.batchSize, statsFile=options.statsFileName, enableTensorboardVisualization=options.tensorboardVisualization)
+		scaledInputBatchImages = tf.scalar_mul((1.0/255), inputBatchImages)
+		scaledInputBatchImages = tf.sub(scaledInputBatchImages, 0.5)
+		scaledInputBatchImages = tf.mul(scaledInputBatchImages, 2.0)
 
-	with tf.name_scope('Model'):
-		# Construct model
-		vgg_fcn.build(inputBatchImages, inputKeepProbability, num_classes=options.numClasses, 
-						random_init_fc8=True, debug=(options.verbose > 0))
+	# Create model
+	arg_scope = inception_resnet_v2_arg_scope()
+	with slim.arg_scope(arg_scope):
+		probabilities, predUpconv, endPoints = inception_resnet_v2(scaledInputBatchImages, inputKeepProbability, options.numClasses, is_training=True)
 
 	with tf.name_scope('Loss'):
 		# Define loss
-		loss = loss.loss(vgg_fcn.softmax, inputBatchLabels, options.numClasses)
+		# loss = loss.loss(vgg_fcn.softmax, inputBatchLabels, options.numClasses)
+		loss = slim.losses.sigmoid_cross_entropy(predUpconv, inputBatchLabels)
+
+		# tf.add_to_collection('losses', cross_entropy_mean)
+		# loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
 
 	with tf.name_scope('Optimizer'):
 		# Define Optimizer
@@ -88,6 +94,7 @@ if options.trainModel:
 	# Initializing the variables
 	# init = tf.initialize_all_variables()
 	init = tf.global_variables_initializer() # TensorFlow v0.11
+	init_local = tf.local_variables_initializer()
 
 	if options.tensorboardVisualization:
 		# Create a summary to monitor cost tensor
@@ -115,6 +122,7 @@ if options.trainModel:
 	with tf.Session() as sess:
 		# Initialize all variables
 		sess.run(init)
+		sess.run(init_local)
 
 		if options.startTrainingFromScratch:
 			print ("Removing previous checkpoints and logs")
@@ -124,11 +132,16 @@ if options.trainModel:
 			os.system("mkdir " + options.imagesOutputDirectory)
 			os.system("mkdir " + options.modelDir)
 
+			# Load the pre-trained Inception ResNet v2 model
+			variables_to_restore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
+			restorer = tf.train.Saver(variables_to_restore)
+			restorer.restore(sess, inc_res_v2_checkpoint_file)
+
 		# Restore checkpoint
 		else:
 			print ("Restoring from checkpoint")
-			saver = tf.train.import_meta_graph(options.modelName + ".meta")
-			saver.restore(sess, options.modelName)
+			saver = tf.train.import_meta_graph(options.modelDir + options.modelName + ".meta")
+			saver.restore(sess, options.modelDir + options.modelName)
 
 		if options.tensorboardVisualization:
 			# Op for writing logs to Tensorboard
@@ -158,13 +171,14 @@ if options.trainModel:
 			if step % options.displayStep == 0:
 				# Calculate batch loss
 				# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
-				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1.0})
+				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1.0})
 
 				# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
 				# print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
 				# Save image results
 				print ("Saving images")
+				print (trainImagesProbabilityMap.shape)
 				inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
 			step += 1
 
@@ -260,21 +274,23 @@ if options.testModel:
 		saver.restore(session, options.modelDir + options.modelName)
 
 		# Get reference to placeholders
-		outputNode = session.graph.get_tensor_by_name("Model/probabilities:0")
-		inputBatchImages = session.graph.get_tensor_by_name("FCN_VGG/inputBatchImages:0")
-		inputKeepProbability = session.graph.get_tensor_by_name("FCN_VGG/inputKeepProbability:0")
+		outputNode = session.graph.get_tensor_by_name("probabilities:0")
+		inputBatchImages = session.graph.get_tensor_by_name("FCN_INC_RES_V2/inputBatchImages:0")
+		inputKeepProbability = session.graph.get_tensor_by_name("FCN_INC_RES_V2/inputKeepProbability:0")
 	
 		# sess.run(tf.initialize_all_variables())
 		# Sample 10 test batches
-		numBatches = 10
+		numBatches = 50
 		for i in range(1, numBatches):
 			print ("Prcessing batch # %d" % i)
 			batchImagesTest, batchLabelsTest = inputReader.getTestBatch(readMask = False) # For testing on datasets without GT mask
 			# output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
-			imagesProbabilityMap = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
+			[imagesProbabilityMap] = session.run([outputNode], feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
 
 			# Save image results
 			print ("Saving images")
+			# print (imagesProbabilityMap.shape)
+			imagesProbabilityMap = np.reshape(imagesProbabilityMap, [-1, options.imageHeight, options.imageWidth, options.numClasses])
 			inputReader.saveLastBatchResults(imagesProbabilityMap, isTrain=False)
 
 	print ("Model tested")

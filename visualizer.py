@@ -12,6 +12,9 @@ def visualize(options):
 	for root, dirs, files in os.walk(options.outputDir):
 		path = root.split('/')
 		print ("Directory:", os.path.basename(root))
+
+		inputFileNames = []
+		outputFileNames = []
 		
 		for file in files:
 			# print(file)
@@ -21,17 +24,35 @@ def visualize(options):
 				# imageName = self.options.imagesOutputDirectory + '/' + 'test_' + imageName[:-4] + '_prob' + imageName[-4:]
 				inputFileName = str(file).split('_')
 				inputFileName = options.inputDir + inputFileName[1] + options.inputExtension
-				print(inputFileName)
 
-				outputIm = cv2.imread(outputFileName)
-				inputIm = cv2.imread(inputFileName)
+				inputFileNames.append(inputFileName)
+				outputFileNames.append(outputFileName)
 
-				cv2.imshow("Input", inputIm)
-				cv2.imshow("Output", outputIm)
+		print ("%d files found" % len(inputFileNames))
 
-				c = cv2.waitKey(-1)
-				if c == 113: # Pressed 'q'
-					exit()
+		fileIndex = 0
+		maxIndex = len(inputFileNames) - 1
+		while True:
+			print(inputFileNames[fileIndex])
+			outputIm = cv2.imread(outputFileNames[fileIndex])
+			inputIm = cv2.imread(inputFileNames[fileIndex])
+
+			cv2.imshow("Input", inputIm)
+			cv2.imshow("Output", outputIm)
+
+			pressedKey = chr(cv2.waitKey(0) & 255)
+			if pressedKey == 'q':
+				break
+			elif pressedKey == 'a':
+				if fileIndex == 0:
+					fileIndex = maxIndex
+				else:
+					fileIndex -= 1
+			elif pressedKey == 'd':
+				if fileIndex == maxIndex:
+					fileIndex = 0
+				else:
+					fileIndex += 1
 
 if __name__ == "__main__":
 
