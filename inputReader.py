@@ -12,10 +12,17 @@ class InputReader:
 		self.imageList = self.readImageNames(self.options.trainFileName)
 		self.imageListTest = self.readImageNames(self.options.testFileName)
 
+		# Shuffle the image list if not random sampling at each stage
+		if not self.options.randomFetch:
+			np.random.shuffle(self.imageList)
+
 		self.currentIndex = 0
 		self.totalEpochs = 0
 		self.totalImages = len(self.imageList)
 		self.totalImagesTest = len(self.imageListTest)
+
+		self.imgShape = [self.options.imageHeight, self.options.imageWidth, self.options.imageChannels]
+		self.maskShape = [self.options.imageHeight, self.options.imageWidth]
 
 	def readImageNames(self, imageListFile):
 		"""Reads a .txt file containing pathes and labeles
@@ -56,9 +63,9 @@ class InputReader:
 
 			# Read image
 			img = skimage.io.imread(fileNames[i])
-			imgShape = [self.options.imageHeight, self.options.imageWidth, self.options.imageChannels]
-			if img.shape != imgShape:
-				img = skimage.transform.resize(img, imgShape, preserve_range=True)
+			
+			if img.shape != self.imgShape:
+				img = skimage.transform.resize(img, self.imgShape, preserve_range=True)
 				# skimage.io.imsave('./resizedIm/' + imageName, img)
 			images.append(img)
 
@@ -67,8 +74,11 @@ class InputReader:
 				mask = skimage.io.imread(maskImageName)
 
 				# Convert the mask to [H, W, options.numClasses]
+				if mask.shape != self.maskShape:
+					mask = skimage.transform.resize(mask, self.maskShape, preserve_range=True)
+
 				backgroundClass = (mask == 0).astype(np.uint8)
-				foregroundClass = (mask == 255).astype(np.uint8)
+				foregroundClass = (mask > 0).astype(np.uint8)
 				mask = np.stack([backgroundClass, foregroundClass], axis=2)
 				masks.append(mask)
 
@@ -88,14 +98,29 @@ class InputReader:
 		if self.totalEpochs >= self.options.trainingEpochs:
 			return None, None
 
-		self.indices = np.random.choice(self.totalImages, self.options.batchSize)
+		endIndex = self.currentIndex + self.options.batchSize
+		if self.options.randomFetch:
+			# Randomly fetch any images
+			self.indices = np.random.choice(self.totalImages, self.options.batchSize)
+		else:
+			# Fetch the next sequence of images
+			self.indices = np.arange(self.currentIndex, endIndex)
+
+			if endIndex > self.totalImages:
+				# Replace the indices which overshot with 0
+				self.indices[self.indices >= self.totalImages] = np.arange(0, np.sum(self.indices >= self.totalImages))
+
 		imageBatch, maskBatch = self.readImagesFromDisk([self.imageList[index] for index in self.indices])
 
-		self.currentIndex = self.currentIndex + self.options.batchSize
+		self.currentIndex = endIndex
 		if self.currentIndex > self.totalImages:
 			print ("Training epochs completed: %f" % (self.totalEpochs + (float(self.currentIndex) / self.totalImages)))
 			self.currentIndex = self.currentIndex - self.totalImages
 			self.totalEpochs = self.totalEpochs + 1
+
+			# Shuffle the image list if not random sampling at each stage
+			if not self.options.randomFetch:
+				np.random.shuffle(self.imageList)
 
 		return imageBatch, maskBatch
 

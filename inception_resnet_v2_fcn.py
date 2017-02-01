@@ -108,9 +108,11 @@ def inception_resnet_v2(inputs, dropout_keep_prob,
     logits: the logits outputs of the model.
     end_points: the set of end_points from the inception model.
   """
-  inputShape = inputs.get_shape().as_list()
-  inputShape[0] = -1# self.batchSize # Images in batch
-  inputShape[3] = num_classes
+  # inputShape = inputs.get_shape().as_list()
+  # inputShape[0] = -1# self.batchSize # Images in batch
+  # inputShape[3] = num_classes
+
+  regularizer = slim.l2_regularizer(0.0005)
 
   end_points = {}
 
@@ -258,7 +260,6 @@ def inception_resnet_v2(inputs, dropout_keep_prob,
         #   end_points['Predictions'] = tf.nn.softmax(logits, name='Predictions')  
 
   # Create classification layer
-  regularizer = slim.l2_regularizer(0.0005)
   score_fr = slim.conv2d(net, num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
                           weights_initializer=tf.truncated_normal_initializer(stddev=(2 / 1536)**0.5), scope='score_fr')
   # score_fr = _score_layer(net, "score_fr", num_classes)

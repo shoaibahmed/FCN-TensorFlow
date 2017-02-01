@@ -27,6 +27,7 @@ parser.add_option("--statsFileName", action="store", type="string", dest="statsF
 parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=640, help="Image width for feeding into the network")
 parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=512, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in image for feeding into the network")
+parser.add_option("--randomFetch", action="store_true", dest="randomFetch", default=False, help="Randomly fetech images for each batch")
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-6, help="Learning rate")
