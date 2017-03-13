@@ -35,6 +35,7 @@ class FCN2VGG:
 
         self.epsilon = tf.constant(value=1e-4)
         self.batchSize = batchSize
+        self.intermediateNumberOfClasses = 10
 
         self.enableTensorboardVisualization = enableTensorboardVisualization
 
@@ -122,42 +123,66 @@ class FCN2VGG:
 
         if random_init_fc8:
             self.score_fr = self._score_layer(self.fc7, "score_fr",
-                                              num_classes)
+                                              self.intermediateNumberOfClasses)
         else:
             self.score_fr = self._fc_layer(self.fc7, "score_fr",
-                                           num_classes=num_classes,
+                                           num_classes=self.intermediateNumberOfClasses,
                                            relu=False)
-
-        self.predCoarse = tf.argmax(self.score_fr, dimension=3)
 
         self.upscore2 = self._upscore_layer(self.score_fr,
                                             shape=tf.shape(self.pool4),
-                                            num_classes=num_classes,
+                                            num_classes=self.intermediateNumberOfClasses,
                                             debug=debug, name='upscore2',
                                             ksize=4, stride=2)
         self.score_pool4 = self._score_layer(self.pool4, "score_pool4",
-                                             num_classes=num_classes)
+                                             num_classes=self.intermediateNumberOfClasses)
         self.fuse_pool4 = tf.add(self.upscore2, self.score_pool4)
 
         self.upscore4 = self._upscore_layer(self.fuse_pool4,
                                             shape=tf.shape(self.pool3),
-                                            num_classes=num_classes,
+                                            num_classes=self.intermediateNumberOfClasses,
                                             debug=debug, name='upscore4',
                                             ksize=4, stride=2)
         self.score_pool3 = self._score_layer(self.pool3, "score_pool3",
-                                             num_classes=num_classes)
+                                             num_classes=self.intermediateNumberOfClasses)
         self.fuse_pool3 = tf.add(self.upscore4, self.score_pool3)
 
         self.upscore32 = self._upscore_layer(self.fuse_pool3,
                                              shape=tf.shape(bgr),
-                                             num_classes=num_classes,
+                                             num_classes=self.intermediateNumberOfClasses,
                                              debug=debug, name='upscore32',
                                              ksize=16, stride=8)
+
+        if self.alpha is None:
+            self.upscore32 = tf.nn.relu(self.upscore32)
+        elif self.alpha >= 0:
+            self.upscore32 = self.leakyRelu(self.upscore32, name='upscore32_lrelu', alpha=self.alpha)
+        else:
+            self.upscore32 = self.parametricRelu(self.upscore32, name='upscore32_prelu')
+
+        # self.upscore32 = tf.nn.dropout(self.upscore32, keepProbability)
+        # self.upscore32_fc1 = self._score_layer(self.upscore32, "upscore32_fc1",
+        #                                      num_classes=self.intermediateNumberOfClasses * 2,
+        #                                      in_features=self.intermediateNumberOfClasses, 
+        #                                      # stddev=0.0000001, activation_fun=True)
+        #                                      stddev=0.001, activation_fun=True)
+        # self.upscore32_fc1 = tf.nn.dropout(self.upscore32_fc1, keepProbability)
+
+        # self.upscore32_pred = self._score_layer(self.upscore32_fc1, "upscore32_pred",
+        #                                      num_classes=num_classes, in_features=self.intermediateNumberOfClasses * 2,
+        #                                      # stddev=0.00000001)
+        #                                      stddev=0.001)
+
+        self.upscore32_pred = self._score_layer(self.upscore32, "upscore32_pred",
+                                     num_classes=num_classes, in_features=self.intermediateNumberOfClasses,
+                                     # stddev=0.00000001)
+                                     stddev=0.001)
+
 
         # self.pred_up = tf.argmax(self.upscore32, dimension=3)
         # self.pred_up = tf.nn.softmax(self.upscore32)
 
-        logits = tf.reshape(self.upscore32, (-1, num_classes))
+        logits = tf.reshape(self.upscore32_pred, (-1, num_classes))
         self.softmax = tf.nn.softmax(logits + self.epsilon)
         self.probabilities = tf.reshape(self.softmax, inputShape, name='probabilities')
 
@@ -227,15 +252,17 @@ class FCN2VGG:
                                 summarize=4, first_n=1)
             return bias
 
-    def _score_layer(self, bottom, name, num_classes):
+    def _score_layer(self, bottom, name, num_classes, in_features=None, stddev=None, activation_fun=False):
         with tf.variable_scope(name) as scope:
             # get number of input channels
-            in_features = bottom.get_shape()[3].value
+            if in_features is None:
+                in_features = bottom.get_shape()[3].value
             shape = [1, 1, in_features, num_classes]
             # He initialization Sheme
             if name == "score_fr":
                 num_input = in_features
                 stddev = (2 / num_input)**0.5
+                # stddev = 0.001
             elif name == "score_pool4":
                 stddev = 0.001
             elif name == "score_pool3":
@@ -244,6 +271,13 @@ class FCN2VGG:
                 stddev = 0.00001
             elif name == "score_pool1":
                 stddev = 0.000001
+            else:
+                # num_input = in_features
+                shape = [1, 1, in_features, num_classes]
+                if stddev is None:
+                    stddev = (2 / in_features)**0.5
+                # stddev = 0.001
+
             # Apply convolution
             w_decay = self.wd
             weights = self._variable_with_weight_decay(shape, stddev, w_decay)
@@ -251,6 +285,15 @@ class FCN2VGG:
             # Apply bias
             conv_biases = self._bias_variable([num_classes], constant=0.0)
             bias = tf.nn.bias_add(conv, conv_biases)
+
+            # Add activation function for intermediate layers
+            if activation_fun:
+                if self.alpha is None:
+                    bias = tf.nn.relu(bias)
+                elif self.alpha >= 0:
+                    bias = self.leakyRelu(bias, name=name + '_lrelu', alpha=self.alpha)
+                else:
+                    bias = self.parametricRelu(bias, name=name + '_prelu')
 
             _activation_summary(bias)
 

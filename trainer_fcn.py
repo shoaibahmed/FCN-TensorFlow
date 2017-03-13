@@ -7,7 +7,8 @@ from optparse import OptionParser
 import datetime as dt
 
 # Import FCN Model
-import fcn2_vgg
+# import fcn2_vgg
+import fcn8_vgg_imp
 import loss
 
 # Command line options
@@ -31,8 +32,8 @@ parser.add_option("--randomFetch", action="store_true", dest="randomFetch", defa
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-6, help="Learning rate")
-parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=50, help="Training epochs")
-parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=7, help="Batch size")
+parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=5, help="Training epochs")
+parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=4, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=20, help="Progress display step")
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
@@ -47,6 +48,7 @@ parser.add_option("--modelName", action="store", type="string", dest="modelName"
 
 # Network Params
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=2, help="Number of classes")
+parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
 parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
 
 # Parse command line options
@@ -64,7 +66,7 @@ if options.trainModel:
 		inputBatchLabels = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, options.numClasses], name="inputBatchLabels")
 		inputKeepProbability = tf.placeholder(dtype=tf.float32, name="inputKeepProbability")
 
-	vgg_fcn = fcn2_vgg.FCN2VGG(batchSize = options.batchSize, statsFile=options.statsFileName, enableTensorboardVisualization=options.tensorboardVisualization)
+	vgg_fcn = fcn8_vgg_imp.FCN2VGG(batchSize = options.batchSize, statsFile=options.statsFileName, enableTensorboardVisualization=options.tensorboardVisualization)
 
 	with tf.name_scope('Model'):
 		# Construct model
@@ -73,7 +75,8 @@ if options.trainModel:
 
 	with tf.name_scope('Loss'):
 		# Define loss
-		loss = loss.loss(vgg_fcn.softmax, inputBatchLabels, options.numClasses)
+		weights = tf.cast(inputBatchLabels != options.ignoreLabel, dtype=tf.float32)
+		loss = loss.loss(vgg_fcn.softmax, inputBatchLabels, options.numClasses, weights)
 
 	with tf.name_scope('Optimizer'):
 		# Define Optimizer
@@ -155,6 +158,10 @@ if options.trainModel:
 			else:
 				[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
 				print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
+
+				if(np.isnan(trainLoss)):
+					print ("Nan reached. Terminating training.")
+					break
 
 			if step % options.displayStep == 0:
 				# Calculate batch loss
@@ -266,8 +273,8 @@ if options.testModel:
 		inputKeepProbability = session.graph.get_tensor_by_name("FCN_VGG/inputKeepProbability:0")
 	
 		# sess.run(tf.initialize_all_variables())
-		# Sample 10 test batches
-		numBatches = 10
+		# Sample 50 test batches
+		numBatches = 50
 		for i in range(1, numBatches):
 			print ("Prcessing batch # %d" % i)
 			batchImagesTest, batchLabelsTest = inputReader.getTestBatch(readMask = False) # For testing on datasets without GT mask

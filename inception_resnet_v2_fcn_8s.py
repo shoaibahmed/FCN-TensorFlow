@@ -112,7 +112,7 @@ def inception_resnet_v2(inputs, dropout_keep_prob,
   # inputShape[0] = -1# self.batchSize # Images in batch
   # inputShape[3] = num_classes
 
-  regularizer = slim.l2_regularizer(0.0005)
+  regularizer = slim.l2_regularizer(5e-4)
 
   end_points = {}
 
@@ -259,75 +259,62 @@ def inception_resnet_v2(inputs, dropout_keep_prob,
         #   end_points['Logits'] = logits
         #   end_points['Predictions'] = tf.nn.softmax(logits, name='Predictions')  
 
-  with tf.variable_scope('Decoder_InceptionResnetV2'):
-    # Create classification layer
-    score_fr = slim.conv2d(net, num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                            weights_initializer=tf.truncated_normal_initializer(stddev=(2 / 1536)**0.5), scope='score_fr')
-    # score_fr = _score_layer(net, "score_fr", num_classes)
+  # Create classification layer
+  intermediatePredictionClasses = 60
+  score_fr = slim.conv2d(net, intermediatePredictionClasses, 1, activation_fn=None, weights_regularizer=regularizer,
+                          weights_initializer=tf.truncated_normal_initializer(stddev=(2 / 1536)**0.5), scope='score_fr')
 
-    # Upscaling
-    # pred_upconv = slim.conv2d_transpose(net, num_classes,
-    #                                      kernel_size = [3, 3],
-    #                                      stride = 16,
-    #                                      padding='SAME')
-    # pred_upconv = _upscore_layer(net,
-    #                               shape=tf.shape(inputs),
-    #                               num_classes=num_classes,
-    #                               name='predUpConv',
-    #                               ksize=32, stride=16)
+  # Dropout
+  score_fr = slim.dropout(score_fr, dropout_keep_prob, scope='Dropout_3')
 
-    # 16 -> 8
-    upscore2 = _upscore_layer(score_fr,
-                              shape=tf.shape(end_points['Mixed_6a']),
-                              num_classes=num_classes,
-                              name='upscore2',
-                              ksize=4, stride=2)
-    score_pool4 = slim.conv2d(end_points['Mixed_6a'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                              weights_initializer=tf.truncated_normal_initializer(stddev=0.01), scope='score_pool4')
-    # score_pool4 = _score_layer(end_points['Mixed_6a'], "score_pool4", num_classes)
-    fuse_pool4 = tf.add(upscore2, score_pool4)
+  # score_fr = _score_layer(net, "score_fr", num_classes)
 
-    # 8->4
-    upscore4 = _upscore_layer(fuse_pool4,
-                              shape=tf.shape(end_points['MaxPool_5a_3x3']),
-                              num_classes=num_classes,
-                              name='upscore4',
-                              ksize=4, stride=2)
-    score_pool3 = slim.conv2d(end_points['MaxPool_5a_3x3'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                              weights_initializer=tf.truncated_normal_initializer(stddev=0.001), scope='score_pool3')
-    # score_pool3 = _score_layer(end_points['MaxPool_5a_3x3'], "score_pool3", num_classes)
-    fuse_pool3 = tf.add(upscore4, score_pool3)
+  # Upscaling
+  # pred_upconv = slim.conv2d_transpose(net, num_classes,
+  #                                      kernel_size = [3, 3],
+  #                                      stride = 16,
+  #                                      padding='SAME')
+  # pred_upconv = _upscore_layer(net,
+  #                               shape=tf.shape(inputs),
+  #                               num_classes=num_classes,
+  #                               name='predUpConv',
+  #                               ksize=32, stride=16)
 
-    # 4->2
-    upscore8 = _upscore_layer(fuse_pool3,
-                              shape=tf.shape(end_points['MaxPool_3a_3x3']),
-                              num_classes=num_classes,
-                              name='upscore8',
-                              ksize=4, stride=2)
-    score_pool2 = slim.conv2d(end_points['MaxPool_3a_3x3'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                              weights_initializer=tf.truncated_normal_initializer(stddev=0.0001), scope='score_pool2')
-    # score_pool2 = _score_layer(end_points['MaxPool_3a_3x3'], "score_pool2", num_classes)
-    fuse_pool2 = tf.add(upscore8, score_pool2)
+  # 16 -> 8
+  upscore2 = _upscore_layer(score_fr,
+                            shape=tf.shape(end_points['Mixed_6a']),
+                            num_classes=intermediatePredictionClasses,
+                            name='upscore2',
+                            ksize=4, stride=2)
+  score_pool4 = slim.conv2d(end_points['Mixed_6a'], intermediatePredictionClasses, 1, activation_fn=None, weights_regularizer=regularizer,
+                            weights_initializer=tf.truncated_normal_initializer(stddev=0.01), scope='score_pool4')
+  # score_pool4 = _score_layer(end_points['Mixed_6a'], "score_pool4", num_classes)
+  fuse_pool4 = tf.add(upscore2, score_pool4)
 
-    # 2->1
-    upscore16 = _upscore_layer(fuse_pool2,
-                              shape=tf.shape(end_points['Conv2d_1a_3x3']),
-                              num_classes=num_classes,
-                              name='upscore16',
-                              ksize=4, stride=2)
+  # 8->1
+  upscore16 = _upscore_layer(fuse_pool4,
+                            shape=tf.shape(end_points['Conv2d_1a_3x3']),
+                            num_classes=intermediatePredictionClasses,
+                            name='upscore16',
+                            ksize=16, stride=8)
 
-    # logits = tf.reshape(upscore16, (-1, num_classes))
-    # epsilon = tf.constant(value=1e-4)
-    # softmax = tf.nn.softmax(logits + epsilon)
-    # probabilities = tf.reshape(softmax, inputShape, name='probabilities')
-    probabilities = tf.nn.softmax(upscore16, name='probabilities')
+  # upscore16New = slim.conv2d(upscore16, num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
+  #                           weights_initializer=tf.truncated_normal_initializer(stddev=0.001), scope='upscore16New')
 
-    return probabilities, upscore16, end_points
+  upscore16New = _score_layer(upscore16, "upscore16New", num_classes)
+
+  # logits = tf.reshape(upscore16, (-1, num_classes))
+  # epsilon = tf.constant(value=1e-4)
+  # softmax = tf.nn.softmax(logits + epsilon)
+  # probabilities = tf.reshape(softmax, inputShape, name='probabilities')
+  probabilities = tf.nn.softmax(upscore16New, name='probabilities')
+
+  return probabilities, upscore16New, end_points
 
 inception_resnet_v2.default_image_size = 299
 
 
-def inception_resnet_v2_arg_scope(weight_decay=0.00004,
+def inception_resnet_v2_arg_scope(weight_decay=5e-4,
                                   batch_norm_decay=0.9997,
                                   batch_norm_epsilon=0.001):
   """Yields the scope with the default parameters for inception_resnet_v2.
@@ -402,71 +389,68 @@ def _upscore_layer(bottom, shape,
     weights = get_deconv_filter(f_shape)
     deconv = tf.nn.conv2d_transpose(bottom, weights, output_shape,
                                     strides=strides, padding='SAME')
-
-    # Set shape information
-    last_shape = bottom.get_shape()
-    # print(last_shape)
-    deconv.set_shape((None, last_shape[1] * 2, last_shape[2] * 2, num_classes))
-
   return deconv
 
-# def _score_layer(bottom, name, num_classes):
-#   with tf.variable_scope(name) as scope:
-#     # get number of input channels
-#     in_features = bottom.get_shape()[3].value
-#     shape = [1, 1, in_features, num_classes]
-#     # He initialization Sheme
-#     if name == "score_fr":
-#         num_input = in_features
-#         stddev = (2 / num_input)**0.5
-#     elif name == "score_pool4":
-#         stddev = 0.001
-#     elif name == "score_pool3":
-#         stddev = 0.0001
-#     elif name == "score_pool2":
-#         stddev = 0.00001
-#     elif name == "score_pool1":
-#         stddev = 0.000001
-#     # Apply convolution
-#     w_decay = 5e-4
-#     weights = _variable_with_weight_decay(shape, stddev, w_decay)
-#     conv = tf.nn.conv2d(bottom, weights, [1, 1, 1, 1], padding='SAME')
-#     # Apply bias
-#     conv_biases = _bias_variable([num_classes], constant=0.0)
-#     bias = tf.nn.bias_add(conv, conv_biases)
+def _score_layer(bottom, name, num_classes):
+  with tf.variable_scope(name) as scope:
+    # get number of input channels
+    in_features = bottom.get_shape()[3].value
+    # shape = [1, 1, in_features, num_classes]
+    shape = [1, 1, 60, num_classes]
+    # He initialization Sheme
+    if name == "score_fr":
+        num_input = in_features
+        stddev = (2 / num_input)**0.5
+    elif name == "upscore16New":
+        stddev = 0.001
+    elif name == "score_pool4":
+        stddev = 0.001
+    elif name == "score_pool3":
+        stddev = 0.0001
+    elif name == "score_pool2":
+        stddev = 0.00001
+    elif name == "score_pool1":
+        stddev = 0.000001
+    # Apply convolution
+    w_decay = 5e-4
+    weights = _variable_with_weight_decay(shape, stddev, w_decay)
+    conv = tf.nn.conv2d(bottom, weights, [1, 1, 1, 1], padding='SAME')
+    # Apply bias
+    conv_biases = _bias_variable([num_classes], constant=0.0)
+    bias = tf.nn.bias_add(conv, conv_biases)
 
-#     return bias
+    return bias
 
-# def _variable_with_weight_decay(shape, stddev, wd):
-#     """Helper to create an initialized Variable with weight decay.
+def _variable_with_weight_decay(shape, stddev, wd):
+    """Helper to create an initialized Variable with weight decay.
 
-#     Note that the Variable is initialized with a truncated normal
-#     distribution.
-#     A weight decay is added only if one is specified.
+    Note that the Variable is initialized with a truncated normal
+    distribution.
+    A weight decay is added only if one is specified.
 
-#     Args:
-#       name: name of the variable
-#       shape: list of ints
-#       stddev: standard deviation of a truncated Gaussian
-#       wd: add L2Loss weight decay multiplied by this float. If None, weight
-#           decay is not added for this Variable.
+    Args:
+      name: name of the variable
+      shape: list of ints
+      stddev: standard deviation of a truncated Gaussian
+      wd: add L2Loss weight decay multiplied by this float. If None, weight
+          decay is not added for this Variable.
 
-#     Returns:
-#       Variable Tensor
-#     """
+    Returns:
+      Variable Tensor
+    """
     
-#     initializer = tf.truncated_normal_initializer(stddev=stddev)
-#     var = tf.get_variable('weights', shape=shape,
-#                           initializer=initializer)
-#     # var = tf.get_variable(name="weights", shape=shape, 
-#     #                       initializer=tf.contrib.layers.xavier_initializer())
+    initializer = tf.truncated_normal_initializer(stddev=stddev)
+    var = tf.get_variable('weights', shape=shape,
+                          initializer=initializer)
+    # var = tf.get_variable(name="weights", shape=shape, 
+    #                       initializer=tf.contrib.layers.xavier_initializer())
 
-#     if wd and (not tf.get_variable_scope().reuse):
-#         weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='weight_loss')
-#         tf.add_to_collection('losses', weight_decay)
-#     return var
+    if wd and (not tf.get_variable_scope().reuse):
+        weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name='weight_loss')
+        tf.add_to_collection('losses', weight_decay)
+    return var
 
-# def _bias_variable(shape, constant=0.0):
-#     initializer = tf.constant_initializer(constant)
-#     return tf.get_variable(name='biases', shape=shape,
-#                            initializer=initializer)
+def _bias_variable(shape, constant=0.0):
+    initializer = tf.constant_initializer(constant)
+    return tf.get_variable(name='biases', shape=shape,
+                           initializer=initializer)

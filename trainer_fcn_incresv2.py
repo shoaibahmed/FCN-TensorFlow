@@ -8,6 +8,7 @@ import datetime as dt
 
 # Import FCN Model
 from inception_resnet_v2_fcn import *
+# from inception_resnet_v2_fcn_imp import *
 inc_res_v2_checkpoint_file = './inception_resnet_v2_2016_08_30.ckpt'
 
 # Command line options
@@ -33,7 +34,7 @@ parser.add_option("--randomFetch", action="store_true", dest="randomFetch", defa
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
 parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=5, help="Training epochs")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=2, help="Batch size")
-parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=20, help="Progress display step")
+parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=5, help="Progress display step")
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
 parser.add_option("--evaluateStepDontSaveImages", action="store_true", dest="evaluateStepDontSaveImages", default=False, help="Don't save images on evaluate step")
@@ -47,6 +48,7 @@ parser.add_option("--modelName", action="store", type="string", dest="modelName"
 
 # Network Params
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=2, help="Number of classes")
+parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
 parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
 
 # Parse command line options
@@ -76,7 +78,8 @@ if options.trainModel:
 	with tf.name_scope('Loss'):
 		# Define loss
 		# loss = loss.loss(vgg_fcn.softmax, inputBatchLabels, options.numClasses)
-		cross_entropy_loss = slim.losses.sigmoid_cross_entropy(predUpconv, inputBatchLabels)
+		weights = tf.cast(inputBatchLabels != options.ignoreLabel, dtype=tf.float32)
+		cross_entropy_loss = slim.losses.softmax_cross_entropy(predUpconv, inputBatchLabels, weights)
 		loss = tf.reduce_sum(slim.losses.get_regularization_losses()) + cross_entropy_loss
 
 		# tf.add_to_collection('losses', cross_entropy_mean)
@@ -276,12 +279,12 @@ if options.testModel:
 		saver.restore(session, options.modelDir + options.modelName)
 
 		# Get reference to placeholders
-		outputNode = session.graph.get_tensor_by_name("probabilities:0")
+		outputNode = session.graph.get_tensor_by_name("Decoder_InceptionResnetV2/probabilities:0")
 		inputBatchImages = session.graph.get_tensor_by_name("FCN_INC_RES_V2/inputBatchImages:0")
 		inputKeepProbability = session.graph.get_tensor_by_name("FCN_INC_RES_V2/inputKeepProbability:0")
 	
 		# sess.run(tf.initialize_all_variables())
-		# Sample 10 test batches
+		# Sample 50 test batches
 		numBatches = 50
 		for i in range(1, numBatches):
 			print ("Prcessing batch # %d" % i)

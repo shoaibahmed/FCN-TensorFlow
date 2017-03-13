@@ -259,70 +259,69 @@ def inception_resnet_v2(inputs, dropout_keep_prob,
         #   end_points['Logits'] = logits
         #   end_points['Predictions'] = tf.nn.softmax(logits, name='Predictions')  
 
-  with tf.variable_scope('Decoder_InceptionResnetV2'):
-    # Create classification layer
-    score_fr = slim.conv2d(net, num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                            weights_initializer=tf.truncated_normal_initializer(stddev=(2 / 1536)**0.5), scope='score_fr')
-    # score_fr = _score_layer(net, "score_fr", num_classes)
+  # Create classification layer
+  score_fr = slim.conv2d(net, num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
+                          weights_initializer=tf.truncated_normal_initializer(stddev=(2 / 1536)**0.5), scope='score_fr')
+  # score_fr = _score_layer(net, "score_fr", num_classes)
 
-    # Upscaling
-    # pred_upconv = slim.conv2d_transpose(net, num_classes,
-    #                                      kernel_size = [3, 3],
-    #                                      stride = 16,
-    #                                      padding='SAME')
-    # pred_upconv = _upscore_layer(net,
-    #                               shape=tf.shape(inputs),
-    #                               num_classes=num_classes,
-    #                               name='predUpConv',
-    #                               ksize=32, stride=16)
+  # Upscaling
+  # pred_upconv = slim.conv2d_transpose(net, num_classes,
+  #                                      kernel_size = [3, 3],
+  #                                      stride = 16,
+  #                                      padding='SAME')
+  # pred_upconv = _upscore_layer(net,
+  #                               shape=tf.shape(inputs),
+  #                               num_classes=num_classes,
+  #                               name='predUpConv',
+  #                               ksize=32, stride=16)
 
-    # 16 -> 8
-    upscore2 = _upscore_layer(score_fr,
-                              shape=tf.shape(end_points['Mixed_6a']),
-                              num_classes=num_classes,
-                              name='upscore2',
-                              ksize=4, stride=2)
-    score_pool4 = slim.conv2d(end_points['Mixed_6a'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                              weights_initializer=tf.truncated_normal_initializer(stddev=0.01), scope='score_pool4')
-    # score_pool4 = _score_layer(end_points['Mixed_6a'], "score_pool4", num_classes)
-    fuse_pool4 = tf.add(upscore2, score_pool4)
+  # 16 -> 8
+  upscore2 = _upscore_layer(score_fr,
+                            shape=tf.shape(end_points['Mixed_6a']),
+                            num_classes=num_classes,
+                            name='upscore2',
+                            ksize=4, stride=2)
+  score_pool4 = slim.conv2d(end_points['Mixed_6a'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
+                            weights_initializer=tf.truncated_normal_initializer(stddev=0.01), scope='score_pool4')
+  # score_pool4 = _score_layer(end_points['Mixed_6a'], "score_pool4", num_classes)
+  fuse_pool4 = tf.add(upscore2, score_pool4)
 
-    # 8->4
-    upscore4 = _upscore_layer(fuse_pool4,
-                              shape=tf.shape(end_points['MaxPool_5a_3x3']),
-                              num_classes=num_classes,
-                              name='upscore4',
-                              ksize=4, stride=2)
-    score_pool3 = slim.conv2d(end_points['MaxPool_5a_3x3'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                              weights_initializer=tf.truncated_normal_initializer(stddev=0.001), scope='score_pool3')
-    # score_pool3 = _score_layer(end_points['MaxPool_5a_3x3'], "score_pool3", num_classes)
-    fuse_pool3 = tf.add(upscore4, score_pool3)
+  # 8->4
+  upscore4 = _upscore_layer(fuse_pool4,
+                            shape=tf.shape(end_points['MaxPool_5a_3x3']),
+                            num_classes=num_classes,
+                            name='upscore4',
+                            ksize=4, stride=2)
+  score_pool3 = slim.conv2d(end_points['MaxPool_5a_3x3'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
+                            weights_initializer=tf.truncated_normal_initializer(stddev=0.001), scope='score_pool3')
+  # score_pool3 = _score_layer(end_points['MaxPool_5a_3x3'], "score_pool3", num_classes)
+  fuse_pool3 = tf.add(upscore4, score_pool3)
 
-    # 4->2
-    upscore8 = _upscore_layer(fuse_pool3,
-                              shape=tf.shape(end_points['MaxPool_3a_3x3']),
-                              num_classes=num_classes,
-                              name='upscore8',
-                              ksize=4, stride=2)
-    score_pool2 = slim.conv2d(end_points['MaxPool_3a_3x3'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
-                              weights_initializer=tf.truncated_normal_initializer(stddev=0.0001), scope='score_pool2')
-    # score_pool2 = _score_layer(end_points['MaxPool_3a_3x3'], "score_pool2", num_classes)
-    fuse_pool2 = tf.add(upscore8, score_pool2)
+  # 4->2
+  upscore8 = _upscore_layer(fuse_pool3,
+                            shape=tf.shape(end_points['MaxPool_3a_3x3']),
+                            num_classes=num_classes,
+                            name='upscore8',
+                            ksize=4, stride=2)
+  score_pool2 = slim.conv2d(end_points['MaxPool_3a_3x3'], num_classes, 1, activation_fn=None, weights_regularizer=regularizer,
+                            weights_initializer=tf.truncated_normal_initializer(stddev=0.0001), scope='score_pool2')
+  # score_pool2 = _score_layer(end_points['MaxPool_3a_3x3'], "score_pool2", num_classes)
+  fuse_pool2 = tf.add(upscore8, score_pool2)
 
-    # 2->1
-    upscore16 = _upscore_layer(fuse_pool2,
-                              shape=tf.shape(end_points['Conv2d_1a_3x3']),
-                              num_classes=num_classes,
-                              name='upscore16',
-                              ksize=4, stride=2)
+  # 2->1
+  upscore16 = _upscore_layer(fuse_pool2,
+                            shape=tf.shape(end_points['Conv2d_1a_3x3']),
+                            num_classes=num_classes,
+                            name='upscore16',
+                            ksize=4, stride=2)
 
-    # logits = tf.reshape(upscore16, (-1, num_classes))
-    # epsilon = tf.constant(value=1e-4)
-    # softmax = tf.nn.softmax(logits + epsilon)
-    # probabilities = tf.reshape(softmax, inputShape, name='probabilities')
-    probabilities = tf.nn.softmax(upscore16, name='probabilities')
+  # logits = tf.reshape(upscore16, (-1, num_classes))
+  # epsilon = tf.constant(value=1e-4)
+  # softmax = tf.nn.softmax(logits + epsilon)
+  # probabilities = tf.reshape(softmax, inputShape, name='probabilities')
+  probabilities = tf.nn.softmax(upscore16, name='probabilities')
 
-    return probabilities, upscore16, end_points
+  return probabilities, upscore16, end_points
 
 inception_resnet_v2.default_image_size = 299
 
