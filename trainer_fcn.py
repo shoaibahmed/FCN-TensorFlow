@@ -1,15 +1,28 @@
 import os
 import numpy as np
-# import freeze_graph
 import tensorflow as tf
 from tensorflow.python.platform import gfile
 from optparse import OptionParser
 import datetime as dt
 
-# Import FCN Model
-from inception_resnet_v2_fcn import *
-# from inception_resnet_v2_fcn_imp import *
-inc_res_v2_checkpoint_file = './inception_resnet_v2_2016_08_30.ckpt'
+import shutil
+import wget
+import tarfile
+
+# Clone the repository if not already existent
+if not os.path.exists("./models/research/slim"):
+	print ("Cloning TensorFlow models repository")
+	from git import Repo # gitpython
+	Repo.clone_from("https://github.com/tensorflow/models.git", ".")
+	print ("Repository sucessfully cloned!")
+
+# Add the path to the tensorflow models repository
+sys.path.append("./models/research/slim")
+sys.path.append("./models/research/slim/nets")
+
+import inception_resnet_v2
+import resnet_v1
+import nasnet.nasnet as nasnet
 
 # Command line options
 parser = OptionParser()
@@ -17,7 +30,6 @@ parser = OptionParser()
 # General settings
 parser.add_option("-t", "--trainModel", action="store_true", dest="trainModel", default=False, help="Train model")
 parser.add_option("-c", "--testModel", action="store_true", dest="testModel", default=False, help="Test model")
-parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
 parser.add_option("-v", "--verbose", action="store", type="int", dest="verbose", default=0, help="Verbosity level")
 parser.add_option("--tensorboardVisualization", action="store_true", dest="tensorboardVisualization", default=False, help="Enable tensorboard visualization")
 
@@ -25,15 +37,16 @@ parser.add_option("--tensorboardVisualization", action="store_true", dest="tenso
 parser.add_option("--trainFileName", action="store", type="string", dest="trainFileName", default="train.idl", help="IDL file name for training")
 parser.add_option("--testFileName", action="store", type="string", dest="testFileName", default="test.idl", help="IDL file name for testing")
 parser.add_option("--statsFileName", action="store", type="string", dest="statsFileName", default="stats.txt", help="Image database statistics (mean, var)")
-parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=640, help="Image width for feeding into the network")
-parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=512, help="Image height for feeding into the network")
+parser.add_option("--maxImageSize", action="store", type="int", dest="maxImageSize", default=2048, help="Maximum size of the larger dimension while preserving aspect ratio")
+# parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=640, help="Image width for feeding into the network")
+# parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=512, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in image for feeding into the network")
-parser.add_option("--randomFetch", action="store_true", dest="randomFetch", default=False, help="Randomly fetech images for each batch")
+parser.add_option("--shufflePerBatch", action="store_true", dest="shufflePerBatch", default=False, help="Shuffle input for every batch")
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
 parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=5, help="Training epochs")
-parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=2, help="Batch size")
+parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=5, help="Progress display step")
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
@@ -43,11 +56,14 @@ parser.add_option("--imagesOutputDirectory", action="store", type="string", dest
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
 # parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
+parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
 parser.add_option("--modelDir", action="store", type="string", dest="modelDir", default="./model-inc_res_v2/", help="Directory for saving the model")
 parser.add_option("--modelName", action="store", type="string", dest="modelName", default="inc_res_v2_fcn", help="Name to be used for saving the model")
 
 # Network Params
-parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=2, help="Number of classes")
+parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2", "VGG"], help="Name of the model to be used")
+parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
+parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=3, help="Number of classes")
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
 parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
 
@@ -55,29 +71,99 @@ parser.add_option("--neuronAliveProbability", action="store", type="float", dest
 (options, args) = parser.parse_args()
 print (options)
 
-# Import custom data
-import inputReader
-inputReader = inputReader.InputReader(options)
+# Verification
+assert (options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!")
+
+# Check the pretrained directory
+if not os.path.exists(options.pretrainedModelsDir):
+	print ("Warning: Pretrained models directory not found!")
+	os.mkdir(options.pretrainedModelsDir)
+
+# Import FCN Model
+if options.modelName == "NASNet":
+	print ("Loading NASNet")
+	nas_checkpoint_file = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'model.ckpt')
+	if not os.path.isfile(nas_checkpoint_file + '.index'):
+		# Download file from the link
+		url = 'https://storage.googleapis.com/download.tensorflow.org/models/nasnet-a_large_04_10_2017.tar.gz'
+		filename = wget.download(url)
+
+		# Extract the tar file
+		tar = tarfile.open(filename)
+		tar.extractall()
+		tar.close()
+
+	# Update image sizes
+	# options.imageHeight = options.imageWidth = 331
+
+elif options.modelName == "IncResV2":
+	print ("Loading Inception ResNet v2")
+	inc_res_v2_checkpoint_file = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'inception_resnet_v2_2016_08_30.ckpt')
+	if not os.path.isfile(inc_res_v2_checkpoint_file):
+		# Download file from the link
+		url = 'http://download.tensorflow.org/models/inception_resnet_v2_2016_08_30.tar.gz'
+		filename = wget.download(url)
+
+		# Extract the tar file
+		tar = tarfile.open(filename)
+		tar.extractall()
+		tar.close()
+
+	# Update image sizes
+	# options.imageHeight = options.imageWidth = 299
+
+else:
+	print ("Error: Model not found!")
+	exit (-1)
+
+# Reads an image from a file, decodes it into a dense tensor
+def _parse_function(imgFileName, gtFileName):
+	# Load the original image
+	image_string = tf.read_file(imgFileName)
+	img = tf.image.decode_jpeg(image_string)
+	img = tf.image.resize_images(img, [options.maxImageSize, options.maxImageSize], preserve_aspect_ratio=True)
+	# img.set_shape([options.imageHeight, options.imageWidth, options.imageChannels])
+	img = tf.cast(img, tf.float32) # Convert to float tensor
+
+	# Load the segmentation mask
+	image_string = tf.read_file(gtFileName)
+	mask = tf.image.decode_jpeg(image_string)
+	mask = tf.image.resize_images(mask, [options.maxImageSize, options.maxImageSize], method=ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
+	mask = tf.cast(mask, tf.float32) # Convert to float tensor
+
+	return filename, img, mask
+
+def loadDataset(currentDataFile):
+	print ("Loading data from file: %s" % (currentDataFile))
+	dataClasses = {}
+	with open(currentDataFile) as f:
+		imageFileNames = f.readlines()
+		originalImageNames = []
+		maskImageNames = []
+		for imName in imageFileNames:
+			imName = imName.strip().split(' ')
+
+			originalImageNames.append(imName[0])
+			maskImageNames.append(imName[1])
+
+		originalImageNames = tf.constant(originalImageNames)
+		maskImageNames = tf.constant(maskImageNames)
+
+	numFiles = len(imageFileNames)
+	print ("Dataset loaded")
+	print ("Number of files found: %d" % (numFiles))
+
+	dataset = tf.contrib.data.Dataset.from_tensor_slices((originalImageNames, maskImageNames))
+	dataset = dataset.map(_parse_function)
+	if options.shufflePerBatch:
+		dataset = dataset.shuffle(buffer_size=numFiles)
+	dataset = dataset.batch(options.batchSize)
+
+	return dataset
 
 if options.trainModel:
-	with tf.variable_scope('FCN_INC_RES_V2'):
-		# Data placeholders
-		inputBatchImages = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, 3], name="inputBatchImages")
-		inputBatchLabels = tf.placeholder(dtype=tf.float32, shape=[None, 512, 640, options.numClasses], name="inputBatchLabels")
-		inputKeepProbability = tf.placeholder(dtype=tf.float32, name="inputKeepProbability")
-
-		scaledInputBatchImages = tf.scalar_mul((1.0/255), inputBatchImages)
-		scaledInputBatchImages = tf.sub(scaledInputBatchImages, 0.5)
-		scaledInputBatchImages = tf.mul(scaledInputBatchImages, 2.0)
-
-	# Create model
-	arg_scope = inception_resnet_v2_arg_scope()
-	with slim.arg_scope(arg_scope):
-		probabilities, predUpconv, endPoints = inception_resnet_v2(scaledInputBatchImages, inputKeepProbability, options.numClasses, is_training=True)
-
 	with tf.name_scope('Loss'):
 		# Define loss
-		# loss = loss.loss(vgg_fcn.softmax, inputBatchLabels, options.numClasses)
 		weights = tf.cast(inputBatchLabels != options.ignoreLabel, dtype=tf.float32)
 		cross_entropy_loss = slim.losses.softmax_cross_entropy(predUpconv, inputBatchLabels, weights)
 		loss = tf.reduce_sum(slim.losses.get_regularization_losses()) + cross_entropy_loss
@@ -107,10 +193,10 @@ if options.trainModel:
 
 		# Create summaries to visualize weights
 		for var in tf.trainable_variables():
-		    tf.histogram_summary(var.name, var)
+			tf.histogram_summary(var.name, var)
 		# Summarize all gradients
 		for grad, var in gradients:
-		    tf.histogram_summary(var.name + '/gradient', grad)
+			tf.histogram_summary(var.name + '/gradient', grad)
 
 		# Merge all summaries into a single op
 		mergedSummaryOp = tf.merge_all_summaries()
