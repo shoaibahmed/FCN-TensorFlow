@@ -15,6 +15,10 @@ import shutil
 import wget
 import tarfile
 
+TRAIN = 0
+VAL = 1
+TEST = 2
+
 # Command line options
 parser = OptionParser()
 
@@ -71,7 +75,7 @@ print (options)
 # Check if the pretrained directory exists
 if not os.path.exists(options.pretrainedModelsDir):
 	print ("Warning: Pretrained models directory not found!")
-	os.mkdir(options.pretrainedModelsDir)
+	os.makedirs(options.pretrainedModelsDir)
 	assert os.path.exists(options.pretrainedModelsDir)
 
 # Clone the repository if not already existent
@@ -211,17 +215,19 @@ testIterator = testDataset.make_initializable_iterator()
 
 globalStep = tf.train.get_or_create_global_step()
 
+# Data placeholders
+datasetSelectionPlaceholder = tf.placeholder(dtype=tf.int32, shape=(), name='DatasetSelectionPlaceholder')
+inputBatchImageNames, inputBatchImages, inputBatchMasks = tf.cond(tf.equal(datasetSelectionPlaceholder, TRAIN), lambda: trainIterator.get_next(), 
+															lambda: tf.cond(tf.equal(datasetSelectionPlaceholder, VAL), lambda: valIterator.get_next(), lambda: testIterator.get_next()))
+print ("Data shape: %s | Mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchMasks.get_shape())))
+
 if options.trainModel:
 	with tf.name_scope('Model'):
 		# Data placeholders
-		inputBatchImageNames, inputBatchImages, inputBatchMasks = trainIterator.get_next()
-		print ("Data shape: %s | Mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchMasks.get_shape())))
-
-		# Data placeholders
-		inputBatchImagesPlaceholder = tf.placeholder(dtype=tf.float32, shape=[None, None, None, options.imageChannels], name="inputBatchImages")
+		# inputBatchImagesPlaceholder = tf.placeholder(dtype=tf.float32, shape=[None, None, None, options.imageChannels], name="inputBatchImages")
 
 		# Scaling only for NASNet and IncResV2
-		scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImagesPlaceholder)
+		scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImages)
 		scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
 		scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
 
@@ -242,6 +248,8 @@ if options.trainModel:
 		else:
 			print ("Error: Model not found!")
 			exit (-1)
+
+	variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
 
 	# TODO: Attach the decoder to the encoder
 	print (endPoints.keys())
@@ -294,23 +302,26 @@ if options.trainModel:
 	bestLoss = 1e9
 	step = 1
 
+# GPU config
+config = tf.ConfigProto()
+config.gpu_options.allow_growth=True
+
 # Train model
 if options.trainModel:
-	with tf.Session() as sess:
+	with tf.Session(config=config) as sess:
 		# Initialize all variables
 		sess.run(init)
 		sess.run(init_local)
 
 		if options.startTrainingFromScratch:
 			print ("Removing previous checkpoints and logs")
-			os.system("rm -rf " + options.logsDir)
-			os.system("rm -rf " + options.imagesOutputDirectory)
-			os.system("rm -rf " + options.modelDir)
-			os.system("mkdir " + options.imagesOutputDirectory)
-			os.system("mkdir " + options.modelDir)
+			shutil.rmtree(options.logsDir)
+			shutil.rmtree(options.imagesOutputDirectory)
+			shutil.rmtree(options.modelDir)
+			os.makedirs(options.imagesOutputDirectory)
+			os.makedirs(options.modelDir)
 
 			# Load the pre-trained Inception ResNet v2 model
-			variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
 			restorer = tf.train.Saver(variablesToRestore)
 			restorer.restore(sess, incResV2CheckpointFile)
 
@@ -325,24 +336,27 @@ if options.trainModel:
 			summaryWriter = tf.train.SummaryWriter(options.logsDir, graph=tf.get_default_graph())
 
 		print ("Starting network training")
-		
+
 		# Keep training until reach max iterations
-		while True:
-			
+		for epoch in range(options.trainingEpochs):
+			# Initialize the dataset iterators
+			sess.run(trainIterator.initializer)
+			sess.run(valIterator.initializer)
+			sess.run(testIterator.initializer)
 
 			# Run optimization op (backprop)
 			if options.tensorboardVisualization:
-				_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
+				_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={datasetSelectionPlaceholder: TRAIN})
 				# Write logs at every iteration
 				summaryWriter.add_summary(summary, step)
 			else:
-				[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: options.neuronAliveProbability})
+				[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={datasetSelectionPlaceholder: TRAIN})
 				print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
 			if step % options.displayStep == 0:
 				# Calculate batch loss
 				# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
-				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, probabilities], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain, inputKeepProbability: 1.0})
+				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
 
 				# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
 				# print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
@@ -350,7 +364,7 @@ if options.trainModel:
 				# Save image results
 				print ("Saving images")
 				print (trainImagesProbabilityMap.shape)
-				inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
+				# inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
 			step += 1
 
 			if step % options.saveStep == 0:
@@ -364,16 +378,16 @@ if options.trainModel:
 				batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 
 				if options.evaluateStepDontSaveImages:
-					[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
+					[testLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
 					print ("Test loss: %f" % testLoss)
 
 				else:
-					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
+					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={datasetSelectionPlaceholder: VAL})
 					print ("Test loss: %f" % testLoss)
 
 					# Save image results
-					print ("Saving images")
-					inputReader.saveLastBatchResults(testImagesProbabilityMap, isTrain=False)
+					# print ("Saving images")
+					# inputReader.saveLastBatchResults(testImagesProbabilityMap, isTrain=False)
 
 				# #Check the accuracy on test data
 				# if step % options.saveStepBest == 0:
@@ -417,7 +431,7 @@ if options.trainModel:
 
 		# Report loss on test data
 		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
+		testLoss = sess.run(loss, feed_dict={datasetSelectionPlaceholder: TEST})
 		print ("Test loss (current): %f" % testLoss)
 
 		print ("Optimization Finished!")
@@ -436,8 +450,8 @@ if options.trainModel:
 if options.testModel:
 	print ("Testing saved model")
 
-	os.system("rm -rf " + options.imagesOutputDirectory)
-	os.system("mkdir " + options.imagesOutputDirectory)
+	shutil.rmtree(options.imagesOutputDirectory)
+	os.makedirs(options.imagesOutputDirectory)
 	
 	# Now we make sure the variable is now a constant, and that the graph still produces the expected result.
 	with tf.Session() as session:
@@ -445,9 +459,9 @@ if options.testModel:
 		saver.restore(session, options.modelDir + options.modelName)
 
 		# Get reference to placeholders
-		outputNode = session.graph.get_tensor_by_name("Decoder_InceptionResnetV2/probabilities:0")
-		inputBatchImages = session.graph.get_tensor_by_name("FCN_INC_RES_V2/inputBatchImages:0")
-		inputKeepProbability = session.graph.get_tensor_by_name("FCN_INC_RES_V2/inputKeepProbability:0")
+		outputNode = session.graph.get_tensor_by_name("Decoder/probabilities:0")
+		inputBatchImages = session.graph.get_tensor_by_name("inputBatchImages:0")
+		inputKeepProbability = session.graph.get_tensor_by_name("inputKeepProbability:0")
 	
 		# sess.run(tf.initialize_all_variables())
 		# Sample 50 test batches
