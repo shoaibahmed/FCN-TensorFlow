@@ -4,10 +4,12 @@ import os
 import sys
 
 import numpy as np
-import tensorflow as tf
-from tensorflow.python.platform import gfile
 from optparse import OptionParser
 import datetime as dt
+
+import tensorflow.contrib.slim as slim
+import tensorflow as tf
+from tensorflow.python.platform import gfile
 
 import shutil
 import wget
@@ -23,9 +25,9 @@ parser.add_option("-v", "--verbose", action="store", type="int", dest="verbose",
 parser.add_option("--tensorboardVisualization", action="store_true", dest="tensorboardVisualization", default=False, help="Enable tensorboard visualization")
 
 # Input Reader Params
-parser.add_option("--trainFileName", action="store", type="string", dest="trainFileName", default="train.idl", help="File containing the training file names")
-parser.add_option("--valFileName", action="store", type="string", dest="valFileName", default="val.idl", help="File containing the validation file names")
-parser.add_option("--testFileName", action="store", type="string", dest="testFileName", default="test.idl", help="File containing the test file names")
+parser.add_option("--trainFileName", action="store", type="string", dest="trainFileName", default="./data/train.csv", help="File containing the training file names")
+parser.add_option("--valFileName", action="store", type="string", dest="valFileName", default="./data/val.csv", help="File containing the validation file names")
+parser.add_option("--testFileName", action="store", type="string", dest="testFileName", default="./data/test.csv", help="File containing the test file names")
 parser.add_option("--statsFileName", action="store", type="string", dest="statsFileName", default="stats.txt", help="Image database statistics (mean, var)")
 parser.add_option("--maxImageSize", action="store", type="int", dest="maxImageSize", default=2048, help="Maximum size of the larger dimension while preserving aspect ratio")
 # parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=640, help="Image width for feeding into the network")
@@ -94,8 +96,8 @@ import nasnet.nasnet as nasnet
 
 # Import FCN Model
 if options.modelName == "NASNet":
-	print ("Loading NASNet")
-	nasCheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'model.ckpt')
+	print ("Downloading pretrained NASNet model")
+	nasCheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, options.modelName, 'model.ckpt')
 	if not os.path.isfile(nasCheckpointFile + '.index'):
 		# Download file from the link
 		url = 'https://storage.googleapis.com/download.tensorflow.org/models/nasnet-a_large_04_10_2017.tar.gz'
@@ -104,15 +106,15 @@ if options.modelName == "NASNet":
 
 		# Extract the tar file
 		tar = tarfile.open(fileName)
-		tar.extractall()
+		tar.extractall(path=os.path.join(options.pretrainedModelsDir, options.modelName))
 		tar.close()
 
 	# Update image sizes
 	# options.imageHeight = options.imageWidth = 331
 
 elif options.modelName == "IncResV2":
-	print ("Loading Inception ResNet v2")
-	incResV2CheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'inception_resnet_v2_2016_08_30.ckpt')
+	print ("Downloading pretrained Inception ResNet v2 model")
+	incResV2CheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, options.modelName, 'inception_resnet_v2_2016_08_30.ckpt')
 	if not os.path.isfile(incResV2CheckpointFile):
 		# Download file from the link
 		url = 'http://download.tensorflow.org/models/inception_resnet_v2_2016_08_30.tar.gz'
@@ -121,7 +123,7 @@ elif options.modelName == "IncResV2":
 
 		# Extract the tar file
 		tar = tarfile.open(fileName)
-		tar.extractall()
+		tar.extractall(path=os.path.join(options.pretrainedModelsDir, options.modelName))
 		tar.close()
 
 	# Update image sizes
@@ -138,15 +140,17 @@ def _parse_function(imgFileName, gtFileName):
 	img = tf.image.decode_jpeg(image_string)
 	img = tf.image.resize_images(img, [options.maxImageSize, options.maxImageSize], preserve_aspect_ratio=True)
 	# img.set_shape([options.imageHeight, options.imageWidth, options.imageChannels])
+	img.set_shape([None, None, options.imageChannels])
 	img = tf.cast(img, tf.float32) # Convert to float tensor
 
 	# Load the segmentation mask
 	image_string = tf.read_file(gtFileName)
 	mask = tf.image.decode_jpeg(image_string)
-	mask = tf.image.resize_images(mask, [options.maxImageSize, options.maxImageSize], method=ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
+	mask = tf.image.resize_images(mask, [options.maxImageSize, options.maxImageSize], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
+	mask.set_shape([None, None, options.imageChannels])
 	mask = tf.cast(mask, tf.float32) # Convert to float tensor
 
-	return filename, img, mask
+	return imgFileName, img, mask
 
 def loadDataset(currentDataFile):
 	print ("Loading data from file: %s" % (currentDataFile))
@@ -156,7 +160,7 @@ def loadDataset(currentDataFile):
 		originalImageNames = []
 		maskImageNames = []
 		for imName in imageFileNames:
-			imName = imName.strip().split(' ')
+			imName = imName.strip().split(',')
 
 			originalImageNames.append(imName[0])
 			maskImageNames.append(imName[1])
@@ -168,7 +172,7 @@ def loadDataset(currentDataFile):
 	print ("Dataset loaded")
 	print ("Number of files found: %d" % (numFiles))
 
-	dataset = tf.contrib.data.Dataset.from_tensor_slices((originalImageNames, maskImageNames))
+	dataset = tf.data.Dataset.from_tensor_slices((originalImageNames, maskImageNames))
 	dataset = dataset.map(_parse_function)
 	if options.shufflePerBatch:
 		dataset = dataset.shuffle(buffer_size=numFiles)
@@ -177,13 +181,13 @@ def loadDataset(currentDataFile):
 	return dataset
 
 # Create dataset objects
-trainDataset, _ = loadDataset(options.trainFileName)
+trainDataset = loadDataset(options.trainFileName)
 trainIterator = trainDataset.make_initializable_iterator()
 
-valDataset, _ = loadDataset(options.valFileName)
+valDataset = loadDataset(options.valFileName)
 valIterator = valDataset.make_initializable_iterator()
 
-testDataset, _ = loadDataset(options.testFileName)
+testDataset = loadDataset(options.testFileName)
 testIterator = testDataset.make_initializable_iterator()
 
 globalStep = tf.train.get_or_create_global_step()
@@ -191,7 +195,7 @@ globalStep = tf.train.get_or_create_global_step()
 if options.trainModel:
 	with tf.name_scope('Model'):
 		# Data placeholders
-		inputBatchImageNames, inputBatchImages, inputBatchMasks = Iterator.get_next()
+		inputBatchImageNames, inputBatchImages, inputBatchMasks = trainIterator.get_next()
 		print ("Data shape: %s | Mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchMasks.get_shape())))
 
 		# Data placeholders
@@ -203,12 +207,12 @@ if options.trainModel:
 		scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
 
 		# Create model
-		if options.model == "NASNet":
+		if options.modelName == "NASNet":
 			arg_scope = nasnet.nasnet_large_arg_scope()
 			with slim.arg_scope(arg_scope):
 				logits, endPoints = nasnet.build_nasnet_large(scaledInputBatchImages, is_training=False, num_classes=options.numClasses)
 
-		elif options.model == "IncResV2":
+		elif options.modelName == "IncResV2":
 			arg_scope = inception_resnet_v2.inception_resnet_v2_arg_scope()
 			with slim.arg_scope(arg_scope):
 				logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
