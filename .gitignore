@@ -20,3 +20,4 @@ data/
 tensorboard/
 plots/
 logs/
+pretrained/

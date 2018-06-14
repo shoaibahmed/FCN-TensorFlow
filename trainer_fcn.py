@@ -1,4 +1,8 @@
+#!/bin/python
+
 import os
+import sys
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.platform import gfile
@@ -8,21 +12,6 @@ import datetime as dt
 import shutil
 import wget
 import tarfile
-
-# Clone the repository if not already existent
-if not os.path.exists("./models/research/slim"):
-	print ("Cloning TensorFlow models repository")
-	from git import Repo # gitpython
-	Repo.clone_from("https://github.com/tensorflow/models.git", ".")
-	print ("Repository sucessfully cloned!")
-
-# Add the path to the tensorflow models repository
-sys.path.append("./models/research/slim")
-sys.path.append("./models/research/slim/nets")
-
-import inception_resnet_v2
-import resnet_v1
-import nasnet.nasnet as nasnet
 
 # Command line options
 parser = OptionParser()
@@ -58,8 +47,8 @@ parser.add_option("--imagesOutputDirectory", action="store", type="string", dest
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
 # parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
 parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
-parser.add_option("--modelDir", action="store", type="string", dest="modelDir", default="./model-inc_res_v2/", help="Directory for saving the model")
-parser.add_option("--modelName", action="store", type="string", dest="modelName", default="inc_res_v2_fcn", help="Name to be used for saving the model")
+parser.add_option("--outputModelDir", action="store", type="string", dest="modelDir", default="", help="Directory for saving the model")
+parser.add_option("--outputModelName", action="store", type="string", dest="modelName", default="", help="Name to be used for saving the model")
 
 # Network Params
 parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2"], help="Name of the model to be used")
@@ -68,31 +57,53 @@ parser.add_option("--numClasses", action="store", type="int", dest="numClasses",
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
 parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
 
-# Files
-
 # Parse command line options
 (options, args) = parser.parse_args()
-print (options)
 
 # Verification
-assert (options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!")
+assert options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!"
+options.outputModelDir = "trained-" + options.modelName
+options.outputModelName = "Model-" + options.modelName
+print (options)
 
-# Check the pretrained directory
+# Check if the pretrained directory exists
 if not os.path.exists(options.pretrainedModelsDir):
 	print ("Warning: Pretrained models directory not found!")
 	os.mkdir(options.pretrainedModelsDir)
+	assert os.path.exists(options.pretrainedModelsDir)
+
+# Clone the repository if not already existent
+if not os.path.exists(os.path.join(options.pretrainedModelsDir, "models/research/slim")):
+	print ("Cloning TensorFlow models repository")
+	import git # gitpython
+
+	class Progress(git.remote.RemoteProgress):
+		def update(self, op_code, cur_count, max_count=None, message=''):
+			print (self._cur_line)
+
+	git.Repo.clone_from("https://github.com/tensorflow/models.git", os.path.join(options.pretrainedModelsDir, "models"), progress=Progress())
+	print ("Repository sucessfully cloned!")
+
+# Add the path to the tensorflow models repository
+sys.path.append(os.path.join(options.pretrainedModelsDir, "models/research/slim"))
+sys.path.append(os.path.join(options.pretrainedModelsDir, "models/research/slim/nets"))
+
+import inception_resnet_v2
+import resnet_v1
+import nasnet.nasnet as nasnet
 
 # Import FCN Model
 if options.modelName == "NASNet":
 	print ("Loading NASNet")
-	nas_checkpoint_file = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'model.ckpt')
-	if not os.path.isfile(nas_checkpoint_file + '.index'):
+	nasCheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'model.ckpt')
+	if not os.path.isfile(nasCheckpointFile + '.index'):
 		# Download file from the link
 		url = 'https://storage.googleapis.com/download.tensorflow.org/models/nasnet-a_large_04_10_2017.tar.gz'
-		filename = wget.download(url)
+		fileName = wget.download(url, options.pretrainedModelsDir)
+		print ("File downloaded: %s" % fileName)
 
 		# Extract the tar file
-		tar = tarfile.open(filename)
+		tar = tarfile.open(fileName)
 		tar.extractall()
 		tar.close()
 
@@ -101,14 +112,15 @@ if options.modelName == "NASNet":
 
 elif options.modelName == "IncResV2":
 	print ("Loading Inception ResNet v2")
-	inc_res_v2_checkpoint_file = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'inception_resnet_v2_2016_08_30.ckpt')
-	if not os.path.isfile(inc_res_v2_checkpoint_file):
+	incResV2CheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, 'inception_resnet_v2_2016_08_30.ckpt')
+	if not os.path.isfile(incResV2CheckpointFile):
 		# Download file from the link
 		url = 'http://download.tensorflow.org/models/inception_resnet_v2_2016_08_30.tar.gz'
-		filename = wget.download(url)
+		fileName = wget.download(url, options.pretrainedModelsDir)
+		print ("File downloaded: %s" % fileName)
 
 		# Extract the tar file
-		tar = tarfile.open(filename)
+		tar = tarfile.open(fileName)
 		tar.extractall()
 		tar.close()
 
@@ -206,13 +218,19 @@ if options.trainModel:
 			exit (-1)
 
 	# TODO: Attach the decoder to the encoder
+	print (endPoints.keys())
+	exit (-1)
 	attachDecoder()
 
 	with tf.name_scope('Loss'):
+		# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
+		predictedMask = tf.reshape(predictedMask, (-1, options.numClasses), name="fcnLogits")
+		inputMask = tf.reshape(inputBatchMasks, (-1, options.numClasses))
+
 		# Define loss
-		weights = tf.cast(inputBatchMasks != options.ignoreLabel, dtype=tf.float32)
+		weights = tf.cast(inputMask != options.ignoreLabel, dtype=tf.float32)
 		weights[weights == 2] = 5 # High weight to the boundary
-		crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputBatchMasks, logits=predictedMask, pos_weight=weights, "weightedCrossEntropy")
+		crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputMask, logits=predictedMask, pos_weight=weights, name="weightedCrossEntropy")
 		loss = tf.reduce_sum(slim.losses.get_regularization_losses()) + crossEntropyLoss
 
 	with tf.name_scope('Optimizer'):
