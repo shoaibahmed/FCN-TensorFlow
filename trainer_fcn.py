@@ -53,8 +53,8 @@ parser.add_option("--imagesOutputDirectory", action="store", type="string", dest
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
 # parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
 parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
-parser.add_option("--outputModelDir", action="store", type="string", dest="modelDir", default="", help="Directory for saving the model")
-parser.add_option("--outputModelName", action="store", type="string", dest="modelName", default="", help="Name to be used for saving the model")
+parser.add_option("--outputModelDir", action="store", type="string", dest="outputModelDir", default="./output/", help="Directory for saving the model")
+parser.add_option("--outputModelName", action="store", type="string", dest="outputModelName", default="Model", help="Name to be used for saving the model")
 
 # Network Params
 parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2"], help="Name of the model to be used")
@@ -68,8 +68,8 @@ parser.add_option("--neuronAliveProbability", action="store", type="float", dest
 
 # Verification
 assert options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!"
-options.outputModelDir = "trained-" + options.modelName
-options.outputModelName = "Model-" + options.modelName
+options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName)
+options.outputModelName = options.outputModelName + "_" + options.modelName
 print (options)
 
 # Check if the pretrained directory exists
@@ -315,11 +315,11 @@ if options.trainModel:
 
 		if options.startTrainingFromScratch:
 			print ("Removing previous checkpoints and logs")
-			shutil.rmtree(options.logsDir)
-			shutil.rmtree(options.imagesOutputDirectory)
-			shutil.rmtree(options.modelDir)
+			if os.path.exists(options.logsDir): shutil.rmtree(options.logsDir)
+			if os.path.exists(options.imagesOutputDirectory): shutil.rmtree(options.imagesOutputDirectory)
+			if os.path.exists(options.outputModelDir): shutil.rmtree(options.outputModelDir)
 			os.makedirs(options.imagesOutputDirectory)
-			os.makedirs(options.modelDir)
+			os.makedirs(options.outputModelDir)
 
 			# Load the pre-trained Inception ResNet v2 model
 			restorer = tf.train.Saver(variablesToRestore)
@@ -328,8 +328,8 @@ if options.trainModel:
 		# Restore checkpoint
 		else:
 			print ("Restoring from checkpoint")
-			saver = tf.train.import_meta_graph(options.modelDir + options.modelName + ".meta")
-			saver.restore(sess, options.modelDir + options.modelName)
+			saver = tf.train.import_meta_graph(options.outputModelDir + options.outputModelName + ".meta")
+			saver.restore(sess, options.outputModelDir + options.outputModelName)
 
 		if options.tensorboardVisualization:
 			# Op for writing logs to Tensorboard
@@ -369,8 +369,9 @@ if options.trainModel:
 
 			if step % options.saveStep == 0:
 				# Save model weights to disk
-				saver.save(sess, options.modelDir + options.modelName)
-				print ("Model saved: %s" % (options.modelDir + options.modelName))
+				outputFileName = options.outputModelDir + options.outputModelName
+				saver.save(sess, outputFileName)
+				print ("Model saved: %s" % (outputFileName))
 
 			#Check the accuracy on test data
 			if step % options.evaluateStep == 0:
@@ -406,8 +407,9 @@ if options.trainModel:
 				# 		print ("Previous best accuracy: %f" % bestLoss)
 
 		# Save final model weights to disk
-		saver.save(sess, options.modelDir + options.modelName)
-		print ("Model saved: %s" % (options.modelDir + options.modelName))
+		outputFileName = options.outputModelDir + options.outputModelName
+		saver.save(sess, outputFileName)
+		print ("Model saved: %s" % (outputFileName))
 
 		# # Write Graph to file
 		# print ("Writing Graph to File")
@@ -430,7 +432,6 @@ if options.trainModel:
 		# freeze_graph.freeze_graph(inputGraphPath, inputSaverDefPath, inputBinary, inputCheckpointPath, outputNodeNames, restoreOpName, fileNameTensorName, outputGraphPath, clearDevices, "")
 
 		# Report loss on test data
-		batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 		testLoss = sess.run(loss, feed_dict={datasetSelectionPlaceholder: TEST})
 		print ("Test loss (current): %f" % testLoss)
 
@@ -446,7 +447,7 @@ if options.trainModel:
 		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 		# print ("Test loss (best model): %f" % testLoss)
 
-# Test model
+# TODO: Test model
 if options.testModel:
 	print ("Testing saved model")
 
