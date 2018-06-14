@@ -34,8 +34,9 @@ parser.add_option("-v", "--verbose", action="store", type="int", dest="verbose",
 parser.add_option("--tensorboardVisualization", action="store_true", dest="tensorboardVisualization", default=False, help="Enable tensorboard visualization")
 
 # Input Reader Params
-parser.add_option("--trainFileName", action="store", type="string", dest="trainFileName", default="train.idl", help="IDL file name for training")
-parser.add_option("--testFileName", action="store", type="string", dest="testFileName", default="test.idl", help="IDL file name for testing")
+parser.add_option("--trainFileName", action="store", type="string", dest="trainFileName", default="train.idl", help="File containing the training file names")
+parser.add_option("--valFileName", action="store", type="string", dest="valFileName", default="val.idl", help="File containing the validation file names")
+parser.add_option("--testFileName", action="store", type="string", dest="testFileName", default="test.idl", help="File containing the test file names")
 parser.add_option("--statsFileName", action="store", type="string", dest="statsFileName", default="stats.txt", help="Image database statistics (mean, var)")
 parser.add_option("--maxImageSize", action="store", type="int", dest="maxImageSize", default=2048, help="Maximum size of the larger dimension while preserving aspect ratio")
 # parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=640, help="Image width for feeding into the network")
@@ -61,11 +62,13 @@ parser.add_option("--modelDir", action="store", type="string", dest="modelDir", 
 parser.add_option("--modelName", action="store", type="string", dest="modelName", default="inc_res_v2_fcn", help="Name to be used for saving the model")
 
 # Network Params
-parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2", "VGG"], help="Name of the model to be used")
+parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2"], help="Name of the model to be used")
 parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=3, help="Number of classes")
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
 parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
+
+# Files
 
 # Parse command line options
 (options, args) = parser.parse_args()
@@ -161,19 +164,59 @@ def loadDataset(currentDataFile):
 
 	return dataset
 
+# Create dataset objects
+trainDataset, _ = loadDataset(options.trainFileName)
+trainIterator = trainDataset.make_initializable_iterator()
+
+valDataset, _ = loadDataset(options.valFileName)
+valIterator = valDataset.make_initializable_iterator()
+
+testDataset, _ = loadDataset(options.testFileName)
+testIterator = testDataset.make_initializable_iterator()
+
+globalStep = tf.train.get_or_create_global_step()
+
 if options.trainModel:
+	with tf.name_scope('Model'):
+		# Data placeholders
+		inputBatchImageNames, inputBatchImages, inputBatchMasks = Iterator.get_next()
+		print ("Data shape: %s | Mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchMasks.get_shape())))
+
+		# Data placeholders
+		inputBatchImagesPlaceholder = tf.placeholder(dtype=tf.float32, shape=[None, None, None, options.imageChannels], name="inputBatchImages")
+
+		# Scaling only for NASNet and IncResV2
+		scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImagesPlaceholder)
+		scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
+		scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
+
+		# Create model
+		if options.model == "NASNet":
+			arg_scope = nasnet.nasnet_large_arg_scope()
+			with slim.arg_scope(arg_scope):
+				logits, endPoints = nasnet.build_nasnet_large(scaledInputBatchImages, is_training=False, num_classes=options.numClasses)
+
+		elif options.model == "IncResV2":
+			arg_scope = inception_resnet_v2.inception_resnet_v2_arg_scope()
+			with slim.arg_scope(arg_scope):
+				logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
+
+		else:
+			print ("Error: Model not found!")
+			exit (-1)
+
+	# TODO: Attach the decoder to the encoder
+	attachDecoder()
+
 	with tf.name_scope('Loss'):
 		# Define loss
-		weights = tf.cast(inputBatchLabels != options.ignoreLabel, dtype=tf.float32)
-		cross_entropy_loss = slim.losses.softmax_cross_entropy(predUpconv, inputBatchLabels, weights)
-		loss = tf.reduce_sum(slim.losses.get_regularization_losses()) + cross_entropy_loss
-
-		# tf.add_to_collection('losses', cross_entropy_mean)
-		# loss = tf.add_n(tf.get_collection('losses'), name='total_loss')
+		weights = tf.cast(inputBatchMasks != options.ignoreLabel, dtype=tf.float32)
+		weights[weights == 2] = 5 # High weight to the boundary
+		crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputBatchMasks, logits=predictedMask, pos_weight=weights, "weightedCrossEntropy")
+		loss = tf.reduce_sum(slim.losses.get_regularization_losses()) + crossEntropyLoss
 
 	with tf.name_scope('Optimizer'):
 		# Define Optimizer
-		#optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
 		optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate)
 
 		# Op to calculate every variable gradient
@@ -183,8 +226,7 @@ if options.trainModel:
 		applyGradients = optimizer.apply_gradients(grads_and_vars=gradients)
 
 	# Initializing the variables
-	# init = tf.initialize_all_variables()
-	init = tf.global_variables_initializer() # TensorFlow v0.11
+	init = tf.global_variables_initializer()
 	init_local = tf.local_variables_initializer()
 
 	if options.tensorboardVisualization:
