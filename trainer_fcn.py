@@ -180,6 +180,25 @@ def loadDataset(currentDataFile):
 
 	return dataset
 
+# TODO: Add skip connections
+# Performs the upsampling of the given images
+def attachDecoder(net, endPoints, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2)):
+	with tf.name_scope('Decoder'):
+		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides)
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+
+		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides)
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+
+		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides)
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+
+		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides)
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+
+		out = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1)) # Obtain per pixel predictions
+	return out
+
 # Create dataset objects
 trainDataset = loadDataset(options.trainFileName)
 trainIterator = trainDataset.make_initializable_iterator()
@@ -215,7 +234,10 @@ if options.trainModel:
 		elif options.modelName == "IncResV2":
 			arg_scope = inception_resnet_v2.inception_resnet_v2_arg_scope()
 			with slim.arg_scope(arg_scope):
-				logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
+				# logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
+				with tf.variable_scope('InceptionResnetV2', 'InceptionResnetV2', [scaledInputBatchImages], reuse=None) as scope:
+				    with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
+				      net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
 
 		else:
 			print ("Error: Model not found!")
@@ -223,8 +245,8 @@ if options.trainModel:
 
 	# TODO: Attach the decoder to the encoder
 	print (endPoints.keys())
-	exit (-1)
-	attachDecoder()
+	# exit (-1)
+	predictedMask = attachDecoder(net, endPoints)
 
 	with tf.name_scope('Loss'):
 		# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
@@ -233,9 +255,9 @@ if options.trainModel:
 
 		# Define loss
 		weights = tf.cast(inputMask != options.ignoreLabel, dtype=tf.float32)
-		weights[weights == 2] = 5 # High weight to the boundary
+		# weights[weights == 2] = 5 # TODO: High weight to the boundary
 		crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputMask, logits=predictedMask, pos_weight=weights, name="weightedCrossEntropy")
-		loss = tf.reduce_sum(slim.losses.get_regularization_losses()) + crossEntropyLoss
+		loss = tf.reduce_sum(tf.losses.get_regularization_losses()) + crossEntropyLoss
 
 	with tf.name_scope('Optimizer'):
 		# Define Optimizer
@@ -288,9 +310,9 @@ if options.trainModel:
 			os.system("mkdir " + options.modelDir)
 
 			# Load the pre-trained Inception ResNet v2 model
-			variables_to_restore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
-			restorer = tf.train.Saver(variables_to_restore)
-			restorer.restore(sess, inc_res_v2_checkpoint_file)
+			variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
+			restorer = tf.train.Saver(variablesToRestore)
+			restorer.restore(sess, incResV2CheckpointFile)
 
 		# Restore checkpoint
 		else:
@@ -306,13 +328,7 @@ if options.trainModel:
 		
 		# Keep training until reach max iterations
 		while True:
-			batchImagesTrain, batchLabelsTrain = inputReader.getTrainBatch()
-			# print ("Batch images shape: %s, Batch labels shape: %s" % (batchImagesTrain.shape, batchLabelsTrain.shape))
-
-			# If training iterations completed
-			if batchImagesTrain is None:
-				print ("Training completed")
-				break
+			
 
 			# Run optimization op (backprop)
 			if options.tensorboardVisualization:
