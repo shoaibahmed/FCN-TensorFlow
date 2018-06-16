@@ -25,7 +25,7 @@ parser = OptionParser()
 # General settings
 parser.add_option("-t", "--trainModel", action="store_true", dest="trainModel", default=False, help="Train model")
 parser.add_option("-c", "--testModel", action="store_true", dest="testModel", default=False, help="Test model")
-parser.add_option("-v", "--verbose", action="store", type="int", dest="verbose", default=0, help="Verbosity level")
+parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False, help="Enable debugging model - high verbosity")
 parser.add_option("--tensorboardVisualization", action="store_true", dest="tensorboardVisualization", default=False, help="Enable tensorboard visualization")
 
 # Input Reader Params
@@ -38,6 +38,7 @@ parser.add_option("--maxImageSize", action="store", type="int", dest="maxImageSi
 # parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=512, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in image for feeding into the network")
 parser.add_option("--shufflePerBatch", action="store_true", dest="shufflePerBatch", default=False, help="Shuffle input for every batch")
+parser.add_option("--useSparseLabels", action="store_true", dest="useSparseLabels", default=False, help="Use sparse labels (Mask shape: [H, W, 1] instead of [H, W, C] where C is the number of classes)")
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
@@ -139,7 +140,7 @@ else:
 	exit (-1)
 
 # Reads an image from a file, decodes it into a dense tensor
-def _parse_function(imgFileName, gtFileName):
+def parseFunction(imgFileName, gtFileName):
 	# Load the original image
 	image_string = tf.read_file(imgFileName)
 	img = tf.image.decode_jpeg(image_string)
@@ -150,13 +151,40 @@ def _parse_function(imgFileName, gtFileName):
 	# Load the segmentation mask
 	image_string = tf.read_file(gtFileName)
 	mask = tf.image.decode_jpeg(image_string)
+
+	# TODO: Optimize this mapping
+	colors = np.array([[0,0,0], [0,128,0], [128,0,0], [224,224,192]])
+	labels = np.array([0, 1, 1, 2]) # Give high weight to the boundary
+	if options.useSparseLabels:
+		# raise NotImplementedError
+		semanticMap = []
+		for idx, color in enumerate(colors):
+			mask = tf.cond(tf.reduce_all(tf.equal(mask, color), axis=-1), lambda: labels[idx], lambda: mask)
+
+	else:
+		semanticMap = []
+		for color in colors:
+			classMap = tf.reduce_all(tf.equal(mask, color), axis=-1)
+			semanticMap.append(classMap)
+		mask = tf.to_float(tf.stack(semanticMap, axis=-1))
+
 	mask = tf.image.resize_images(mask, [options.maxImageSize, options.maxImageSize], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
-	# mask.set_shape([None, None, 1]) # Sparse tensor
 	mask = tf.cast(mask, tf.int32) # Convert to float tensor
 
 	return imgFileName, img, mask
 
-def loadDataset(currentDataFile):
+def dataAugmentationFunction(imgFileName, img, mask):
+    img = tf.image.random_flip_left_right(img)
+
+    img = tf.image.random_brightness(img, max_delta=32.0 / 255.0)
+    img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
+
+    # Make sure the image is still in [0, 255]
+    img = tf.clip_by_value(img, 0.0, 255.0)
+
+    return imgFileName, img, mask
+
+def loadDataset(currentDataFile, dataAugmentation=False):
 	print ("Loading data from file: %s" % (currentDataFile))
 	dataClasses = {}
 	with open(currentDataFile) as f:
@@ -177,9 +205,16 @@ def loadDataset(currentDataFile):
 	print ("Number of files found: %d" % (numFiles))
 
 	dataset = tf.data.Dataset.from_tensor_slices((originalImageNames, maskImageNames))
-	dataset = dataset.map(_parse_function)
+	dataset = dataset.map(parseFunction, num_parallel_calls=4)
+
+	# Data augmentation
+	if dataAugmentation:
+		dataset = dataset.map(dataAugmentationFunction, num_parallel_calls=4)
+
+	# Data shuffling
 	if options.shufflePerBatch:
 		dataset = dataset.shuffle(buffer_size=numFiles)
+
 	dataset = dataset.batch(options.batchSize)
 
 	return dataset
@@ -208,7 +243,7 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 	return out
 
 # Create dataset objects
-trainDataset = loadDataset(options.trainFileName)
+trainDataset = loadDataset(options.trainFileName, dataAugmentation=True)
 trainIterator = trainDataset.make_initializable_iterator()
 
 valDataset = loadDataset(options.valFileName)
@@ -249,11 +284,11 @@ if options.trainModel:
 				    with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
 				      net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
 
+			variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
+
 		else:
 			print ("Error: Model not found!")
 			exit (-1)
-
-	variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
 
 	# TODO: Attach the decoder to the encoder
 	print (endPoints.keys())
@@ -362,8 +397,17 @@ if options.trainModel:
 			sess.run(testIterator.initializer)
 
 			# TODO: Iterate over the images in the dataset
-			[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
-			print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
+
+			# Debug mode
+			if options.debug:
+				[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
+				print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
+				if np.isnan(np.sum(predMask)):
+					print ("Error: NaN encountered!")
+					exit (-1)
+
+				print ("Unique labels in prediction:", np.unique(predMask))
+				print ("Unique labels in GT:", np.unique(gtMask))
 
 			# Run optimization op (backprop)
 			if options.tensorboardVisualization:
