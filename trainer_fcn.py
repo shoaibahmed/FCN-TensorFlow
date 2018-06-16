@@ -41,6 +41,7 @@ parser.add_option("--shufflePerBatch", action="store_true", dest="shufflePerBatc
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
+parser.add_option("--weightDecayLambda", action="store", type="float", dest="weightDecayLambda", default=5e-5, help="Weight Decay Lambda")
 parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=5, help="Training epochs")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=5, help="Progress display step")
@@ -143,7 +144,6 @@ def _parse_function(imgFileName, gtFileName):
 	image_string = tf.read_file(imgFileName)
 	img = tf.image.decode_jpeg(image_string)
 	img = tf.image.resize_images(img, [options.maxImageSize, options.maxImageSize], preserve_aspect_ratio=True)
-	# img.set_shape([options.imageHeight, options.imageWidth, options.imageChannels])
 	img.set_shape([None, None, options.imageChannels])
 	img = tf.cast(img, tf.float32) # Convert to float tensor
 
@@ -151,8 +151,8 @@ def _parse_function(imgFileName, gtFileName):
 	image_string = tf.read_file(gtFileName)
 	mask = tf.image.decode_jpeg(image_string)
 	mask = tf.image.resize_images(mask, [options.maxImageSize, options.maxImageSize], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
-	mask.set_shape([None, None, options.imageChannels])
-	mask = tf.cast(mask, tf.float32) # Convert to float tensor
+	# mask.set_shape([None, None, 1]) # Sparse tensor
+	mask = tf.cast(mask, tf.int32) # Convert to float tensor
 
 	return imgFileName, img, mask
 
@@ -186,21 +186,25 @@ def loadDataset(currentDataFile):
 
 # TODO: Add skip connections
 # Performs the upsampling of the given images
-def attachDecoder(net, endPoints, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2)):
+def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same'):
 	with tf.name_scope('Decoder'):
-		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides)
-		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
-		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides)
-		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
-		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides)
-		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
-		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides)
-		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1))
+		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
-		out = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1)) # Obtain per pixel predictions
+		# Match dimensions (convolutions with 'valid' padding reducing the dimensions)
+		out = tf.image.resize_bilinear(out, [inputShape[1], inputShape[2]], align_corners=True) # TODO: Is it useful or it doesn't matter?
+		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding='same')
+
+		out = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions
 	return out
 
 # Create dataset objects
@@ -254,18 +258,27 @@ if options.trainModel:
 	# TODO: Attach the decoder to the encoder
 	print (endPoints.keys())
 	# exit (-1)
-	predictedMask = attachDecoder(net, endPoints)
+	predictedMask = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
+
+	if options.tensorboardVisualization:
+		tf.summary.image('Original Image', inputBatchImages, max_outputs=3)
+		tf.summary.image('Desired Mask', tf.to_float(inputBatchMasks), max_outputs=3)
+		tf.summary.image('Predicted Mask', tf.to_float(tf.argmax(predictedMask, axis=-1)), max_outputs=3)
 
 	with tf.name_scope('Loss'):
 		# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
-		predictedMask = tf.reshape(predictedMask, (-1, options.numClasses), name="fcnLogits")
-		inputMask = tf.reshape(inputBatchMasks, (-1, options.numClasses))
+		predictedMaskFlattened = tf.reshape(predictedMask, (-1, tf.shape(predictedMask)[1] * tf.shape(predictedMask)[2], options.numClasses), name="fcnLogits")
+		inputMaskFlattened = tf.reshape(inputBatchMasks, (-1, tf.shape(inputBatchMasks)[1] * tf.shape(inputBatchMasks)[2]))
+		# inputMaskFlattened = tf.layers.flatten(inputBatchMasks)
 
 		# Define loss
-		weights = tf.cast(inputMask != options.ignoreLabel, dtype=tf.float32)
+		weights = tf.cast(inputMaskFlattened != options.ignoreLabel, dtype=tf.float32)
 		# weights[weights == 2] = 5 # TODO: High weight to the boundary
-		crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputMask, logits=predictedMask, pos_weight=weights, name="weightedCrossEntropy")
-		loss = tf.reduce_sum(tf.losses.get_regularization_losses()) + crossEntropyLoss
+		# crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputMask, logits=predictedMask, pos_weight=weights, name="weightedCrossEntropy")
+		# crossEntropyLoss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=inputMaskFlattened, logits=predictedMaskFlattened, name="crossEntropy"))
+		crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened)
+		regLoss = options.weightDecayLambda * tf.reduce_sum(tf.losses.get_regularization_losses())
+		loss = crossEntropyLoss + regLoss
 
 	with tf.name_scope('Optimizer'):
 		# Define Optimizer
@@ -283,14 +296,16 @@ if options.trainModel:
 
 	if options.tensorboardVisualization:
 		# Create a summary to monitor cost tensor
-		tf.scalar_summary("loss", loss)
+		tf.summary.scalar("reg_loss", regLoss)
+		tf.summary.scalar("cross_entropy", crossEntropyLoss)
+		tf.summary.scalar("total_loss", loss)
 
 		# Create summaries to visualize weights
 		for var in tf.trainable_variables():
-			tf.histogram_summary(var.name, var)
+			tf.summary.histogram(var.name, var)
 		# Summarize all gradients
 		for grad, var in gradients:
-			tf.histogram_summary(var.name + '/gradient', grad)
+			tf.summary.histogram(var.name + '/gradient', grad)
 
 		# Merge all summaries into a single op
 		mergedSummaryOp = tf.merge_all_summaries()
@@ -343,6 +358,10 @@ if options.trainModel:
 			sess.run(trainIterator.initializer)
 			sess.run(valIterator.initializer)
 			sess.run(testIterator.initializer)
+
+			# TODO: Iterate over the images in the dataset
+			[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
+			print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
 
 			# Run optimization op (backprop)
 			if options.tensorboardVisualization:
