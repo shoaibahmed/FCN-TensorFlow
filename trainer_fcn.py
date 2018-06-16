@@ -258,16 +258,17 @@ if options.trainModel:
 	# TODO: Attach the decoder to the encoder
 	print (endPoints.keys())
 	# exit (-1)
-	predictedMask = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
+	predictedLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
+	predictedMask = tf.expand_dims(tf.argmax(predictedLogits, axis=-1), -1)
 
 	if options.tensorboardVisualization:
 		tf.summary.image('Original Image', inputBatchImages, max_outputs=3)
 		tf.summary.image('Desired Mask', tf.to_float(inputBatchMasks), max_outputs=3)
-		tf.summary.image('Predicted Mask', tf.to_float(tf.argmax(predictedMask, axis=-1)), max_outputs=3)
+		tf.summary.image('Predicted Mask', tf.to_float(), max_outputs=3)
 
 	with tf.name_scope('Loss'):
 		# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
-		predictedMaskFlattened = tf.reshape(predictedMask, (-1, tf.shape(predictedMask)[1] * tf.shape(predictedMask)[2], options.numClasses), name="fcnLogits")
+		predictedMaskFlattened = tf.reshape(predictedLogits, (-1, tf.shape(predictedLogits)[1] * tf.shape(predictedLogits)[2], options.numClasses), name="fcnLogits")
 		inputMaskFlattened = tf.reshape(inputBatchMasks, (-1, tf.shape(inputBatchMasks)[1] * tf.shape(inputBatchMasks)[2]))
 		# inputMaskFlattened = tf.layers.flatten(inputBatchMasks)
 
@@ -305,10 +306,11 @@ if options.trainModel:
 			tf.summary.histogram(var.name, var)
 		# Summarize all gradients
 		for grad, var in gradients:
-			tf.summary.histogram(var.name + '/gradient', grad)
+			if grad is not None:
+				tf.summary.histogram(var.name + '/gradient', grad)
 
 		# Merge all summaries into a single op
-		mergedSummaryOp = tf.merge_all_summaries()
+		mergedSummaryOp = tf.summary.merge_all()
 
 	# 'Saver' op to save and restore all the variables
 	saver = tf.train.Saver()
@@ -348,7 +350,7 @@ if options.trainModel:
 
 		if options.tensorboardVisualization:
 			# Op for writing logs to Tensorboard
-			summaryWriter = tf.train.SummaryWriter(options.logsDir, graph=tf.get_default_graph())
+			summaryWriter = tf.summary.FileWriter(options.logsDir, graph=tf.get_default_graph())
 
 		print ("Starting network training")
 
