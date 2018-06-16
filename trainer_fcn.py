@@ -38,6 +38,7 @@ parser.add_option("--maxImageSize", action="store", type="int", dest="maxImageSi
 # parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=512, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in image for feeding into the network")
 parser.add_option("--shufflePerBatch", action="store_true", dest="shufflePerBatch", default=False, help="Shuffle input for every batch")
+parser.add_option("--mapLabelsFromRGB", action="store_true", dest="mapLabelsFromRGB", default=False, help="Map labels from RGB to integers (if data is in form [H, W, 3])")
 parser.add_option("--useSparseLabels", action="store_true", dest="useSparseLabels", default=False, help="Use sparse labels (Mask shape: [H, W, 1] instead of [H, W, C] where C is the number of classes)")
 
 # Trainer Params
@@ -141,6 +142,7 @@ else:
 
 # Reads an image from a file, decodes it into a dense tensor
 def parseFunction(imgFileName, gtFileName):
+	# TODO: Replace with decode_image (decode_image doesn't return shape)
 	# Load the original image
 	image_string = tf.read_file(imgFileName)
 	img = tf.image.decode_jpeg(image_string)
@@ -150,23 +152,26 @@ def parseFunction(imgFileName, gtFileName):
 
 	# Load the segmentation mask
 	image_string = tf.read_file(gtFileName)
-	mask = tf.image.decode_jpeg(image_string)
+	mask = tf.image.decode_png(image_string)
 
-	# TODO: Optimize this mapping
-	colors = np.array([[0,0,0], [0,128,0], [128,0,0], [224,224,192]])
-	labels = np.array([0, 1, 1, 2]) # Give high weight to the boundary
-	if options.useSparseLabels:
-		# raise NotImplementedError
-		semanticMap = []
-		for idx, color in enumerate(colors):
-			mask = tf.cond(tf.reduce_all(tf.equal(mask, color), axis=-1), lambda: labels[idx], lambda: mask)
+	if options.mapLabelsFromRGB:
+		assert False # Not working at this point
+		# TODO: Optimize this mapping
+		colors = np.array([[0,0,0], [0,128,0], [128,0,0], [224,224,192]])
+		labels = np.array([0, 1, 1, 2]) # Give high weight to the boundary
+		if options.useSparseLabels:
+			# raise NotImplementedError
+			maskNew = tf.zeros(shape=[tf.shape(mask)[0], tf.shape(mask)[1]])
+			for idx, color in enumerate(colors):
+				maskNew = tf.cond(tf.reduce_all(tf.equal(mask, color), axis=-1), lambda: maskNew, lambda: maskNew)
+				# maskNew = tf.cond(tf.equal(mask, color), lambda: labels[idx], lambda: maskNew)
 
-	else:
-		semanticMap = []
-		for color in colors:
-			classMap = tf.reduce_all(tf.equal(mask, color), axis=-1)
-			semanticMap.append(classMap)
-		mask = tf.to_float(tf.stack(semanticMap, axis=-1))
+		else:
+			semanticMap = []
+			for color in colors:
+				classMap = tf.reduce_all(tf.equal(mask, color), axis=-1)
+				semanticMap.append(classMap)
+			mask = tf.to_float(tf.stack(semanticMap, axis=-1))
 
 	mask = tf.image.resize_images(mask, [options.maxImageSize, options.maxImageSize], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
 	mask = tf.cast(mask, tf.int32) # Convert to float tensor
@@ -299,7 +304,7 @@ if options.trainModel:
 	if options.tensorboardVisualization:
 		tf.summary.image('Original Image', inputBatchImages, max_outputs=3)
 		tf.summary.image('Desired Mask', tf.to_float(inputBatchMasks), max_outputs=3)
-		tf.summary.image('Predicted Mask', tf.to_float(), max_outputs=3)
+		tf.summary.image('Predicted Mask', tf.to_float(predictedMask), max_outputs=3)
 
 	with tf.name_scope('Loss'):
 		# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
@@ -396,41 +401,45 @@ if options.trainModel:
 			sess.run(valIterator.initializer)
 			sess.run(testIterator.initializer)
 
-			# TODO: Iterate over the images in the dataset
+			try:
+				step = 0
+				while True:
+					# Debug mode
+					if options.debug:
+						[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
+						print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
+						if np.isnan(np.sum(predMask)):
+							print ("Error: NaN encountered!")
+							exit (-1)
 
-			# Debug mode
-			if options.debug:
-				[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
-				print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
-				if np.isnan(np.sum(predMask)):
-					print ("Error: NaN encountered!")
-					exit (-1)
+						print ("Unique labels in prediction:", np.unique(predMask))
+						print ("Unique labels in GT:", np.unique(gtMask))
 
-				print ("Unique labels in prediction:", np.unique(predMask))
-				print ("Unique labels in GT:", np.unique(gtMask))
+					# Run optimization op (backprop)
+					if options.tensorboardVisualization:
+						_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={datasetSelectionPlaceholder: TRAIN})
+						# Write logs at every iteration
+						summaryWriter.add_summary(summary, step)
+					else:
+						[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={datasetSelectionPlaceholder: TRAIN})
+						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
-			# Run optimization op (backprop)
-			if options.tensorboardVisualization:
-				_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={datasetSelectionPlaceholder: TRAIN})
-				# Write logs at every iteration
-				summaryWriter.add_summary(summary, step)
-			else:
-				[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={datasetSelectionPlaceholder: TRAIN})
-				print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
+					if step % options.displayStep == 0:
+						# Calculate batch loss
+						# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
+						[trainLoss, trainImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
 
-			if step % options.displayStep == 0:
-				# Calculate batch loss
-				# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
-				[trainLoss, trainImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
+						# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
+						# print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
-				# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
-				# print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
+						# Save image results
+						print ("Saving images")
+						print (trainImagesProbabilityMap.shape)
+						# inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
+					step += 1
 
-				# Save image results
-				print ("Saving images")
-				print (trainImagesProbabilityMap.shape)
-				# inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
-			step += 1
+			except tf.errors.OutOfRangeError:
+				print('Done training for %d epochs, %d steps.' % (epoch, step))
 
 			if step % options.saveStep == 0:
 				# Save model weights to disk
@@ -438,38 +447,33 @@ if options.trainModel:
 				saver.save(sess, outputFileName)
 				print ("Model saved: %s" % (outputFileName))
 
-			#Check the accuracy on test data
-			if step % options.evaluateStep == 0:
-				# Report loss on test data
-				batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
+			# Check the accuracy on test data
+			# Report loss on test data
+			batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 
-				if options.evaluateStepDontSaveImages:
-					[testLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
-					print ("Test loss: %f" % testLoss)
+			if options.evaluateStepDontSaveImages:
+				[testLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
+				print ("Test loss: %f" % testLoss)
 
-				else:
-					[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={datasetSelectionPlaceholder: VAL})
-					print ("Test loss: %f" % testLoss)
+			else:
+				[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={datasetSelectionPlaceholder: VAL})
+				print ("Test loss: %f" % testLoss)
 
-					# Save image results
-					# print ("Saving images")
-					# inputReader.saveLastBatchResults(testImagesProbabilityMap, isTrain=False)
+			# #Check the accuracy on test data
+			# if step % options.saveStepBest == 0:
+			# 	# Report loss on test data
+			# 	batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
+			# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
+			# 	print ("Test loss: %f" % testLoss)
 
-				# #Check the accuracy on test data
-				# if step % options.saveStepBest == 0:
-				# 	# Report loss on test data
-				# 	batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-				# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
-				# 	print ("Test loss: %f" % testLoss)
-
-				# 	# If its the best loss achieved so far, save the model
-				# 	if testLoss < bestLoss:
-				# 		bestLoss = testLoss
-				# 		# bestModelSaver.save(sess, best_checkpoint_dir + 'checkpoint.data')
-				# 		bestModelSaver.save(sess, checkpointPrefix, global_step=0, latest_filename=checkpointStateName)
-				# 		print ("Best model saved in file: %s" % checkpointPrefix)
-				# 	else:
-				# 		print ("Previous best accuracy: %f" % bestLoss)
+			# 	# If its the best loss achieved so far, save the model
+			# 	if testLoss < bestLoss:
+			# 		bestLoss = testLoss
+			# 		# bestModelSaver.save(sess, best_checkpoint_dir + 'checkpoint.data')
+			# 		bestModelSaver.save(sess, checkpointPrefix, global_step=0, latest_filename=checkpointStateName)
+			# 		print ("Best model saved in file: %s" % checkpointPrefix)
+			# 	else:
+			# 		print ("Previous best accuracy: %f" % bestLoss)
 
 		# Save final model weights to disk
 		outputFileName = options.outputModelDir + options.outputModelName
