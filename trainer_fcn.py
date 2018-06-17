@@ -498,13 +498,12 @@ if options.trainModel:
 
 			except tf.errors.OutOfRangeError:
 				print('Testing on validation set completed!')
-			averageTestLoss /= iterations
-			print('Average validation error: %f' % (averageTestLoss))
+			averageValLoss /= iterations
+			print('Average validation error: %f' % (averageValLoss))
 
-			# #Check the accuracy on test data
+			# # Check the accuracy on test data
 			# if step % options.saveStepBest == 0:
 			# 	# Report loss on test data
-			# 	batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
 			# 	[testLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 			# 	print ("Test loss: %f" % testLoss)
 
@@ -558,7 +557,6 @@ if options.trainModel:
 		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
 		# print ("Test loss (best model): %f" % testLoss)
 
-# TODO: Test model
 if options.testModel:
 	print ("Testing saved model")
 
