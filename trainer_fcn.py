@@ -181,13 +181,13 @@ def parseFunction(imgFileName, gtFileName):
 def dataAugmentationFunction(imgFileName, img, mask):
 	with tf.name_scope('flipLR'):
 		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[]) # Random variable: two possible outcomes (0 or 1)
-		img = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_left_right(img), lambda: img)
-		mask = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_left_right(mask), lambda: mask)
+		img = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_left_right(img), false_fn=lambda: img)
+		mask = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_left_right(mask), false_fn=lambda: mask)
 
 	with tf.name_scope('flipUD'):
 		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[]) # Random variable: two possible outcomes (0 or 1)
-		img = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_up_down(img), lambda: img)
-		mask = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_up_down(mask), lambda: mask)
+		img = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_up_down(img), false_fn=lambda: img)
+		mask = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_up_down(mask), false_fn=lambda: mask)
 
 	img = tf.image.random_brightness(img, max_delta=32.0 / 255.0)
 	img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
@@ -322,10 +322,10 @@ if options.trainModel:
 
 		# Define loss
 		weights = tf.cast(inputMaskFlattened != options.ignoreLabel, dtype=tf.float32)
-		# weights[weights == 2] = 5 # TODO: High weight to the boundary
+		weights = tf.cond(pred=tf.equal(weights, 2), true_fn=lambda: 5.0, false_fn=lambda: weights) # TODO: High weight to the boundary
 		# crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputMask, logits=predictedMask, pos_weight=weights, name="weightedCrossEntropy")
 		# crossEntropyLoss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=inputMaskFlattened, logits=predictedMaskFlattened, name="crossEntropy"))
-		crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened)
+		crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened, weights=weights)
 		regLoss = options.weightDecayLambda * tf.reduce_sum(tf.losses.get_regularization_losses())
 		loss = crossEntropyLoss + regLoss
 
