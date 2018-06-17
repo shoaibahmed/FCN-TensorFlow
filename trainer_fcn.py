@@ -291,7 +291,7 @@ valIterator = valDataset.make_initializable_iterator()
 testDataset = loadDataset(options.testFileName)
 testIterator = testDataset.make_initializable_iterator()
 
-globalStep = tf.train.get_or_create_global_step()
+# globalStep = tf.train.get_or_create_global_step() # To be used with Optimizer
 
 # Data placeholders
 datasetSelectionPlaceholder = tf.placeholder(dtype=tf.int32, shape=(), name='DatasetSelectionPlaceholder')
@@ -432,6 +432,7 @@ if options.trainModel:
 			summaryWriter = tf.summary.FileWriter(options.logsDir, graph=tf.get_default_graph())
 
 		print ("Starting network training")
+		globalStep = 0
 
 		# Keep training until reach max iterations
 		for epoch in range(options.trainingEpochs):
@@ -458,19 +459,20 @@ if options.trainModel:
 					# Run optimization op (backprop)
 					if options.tensorboardVisualization:
 						_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						summaryWriter.add_summary(summary, step) # Write logs at every iteration
+						summaryWriter.add_summary(summary, global_step=globalStep) # Write logs at every iteration
 					else:
-						[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
-
+						_ = sess.run(applyGradients, feed_dict={datasetSelectionPlaceholder: TRAIN})
+					
 					if step % options.displayStep == 0:
 						# Calculate batch loss
 						[fileName, originalImage, trainLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
+						print ("Epoch: %d | Iteration: %d | Minibatch Loss: %f" % (epoch, step, trainLoss))
 
 						# Save image results
 						writeMaskToImage(originalImage, predictedSegMask, options.imagesOutputDirectory, fileName)
+					
 					step += 1
+					globalStep += 1
 
 			except tf.errors.OutOfRangeError:
 				print('Done training for %d epochs, %d steps.' % (epoch, step))
@@ -488,15 +490,14 @@ if options.trainModel:
 				while True:
 					if options.evaluateStepDontSaveImages:
 						[valLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
-						print ("Validation loss: %f" % valLoss)
-
+						
 					else:
 						[fileName, originalImage, valLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
-						print ("Validation loss: %f" % valLoss)
-
+						
 						# Save image results
 						writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
-					
+
+					print ("Batch Validation loss: %f" % valLoss)
 					averageValLoss += valLoss
 					iterations += 1
 
