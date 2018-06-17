@@ -226,8 +226,8 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 
 # TODO: Add skip connections
 # Performs the upsampling of the given images
-def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same'):
-	with tf.name_scope('Decoder'):
+def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=64, filterSize=(3, 3), strides=(2, 2), padding='same'):
+	with tf.name_scope('Decoder'), tf.variable_scope('Decoder'):
 		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
@@ -429,13 +429,12 @@ if options.trainModel:
 						# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
 						[trainLoss, trainImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
 
-						# print ("Iter " + str(step) + ", Minibatch Loss= " + "{:.6f}".format(trainLoss))
-						# print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
+						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
-						# Save image results
-						print ("Saving images")
-						print (trainImagesProbabilityMap.shape)
-						# inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
+						# # Save image results
+						# print ("Saving images")
+						# print (trainImagesProbabilityMap.shape)
+						# # inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
 					step += 1
 
 			except tf.errors.OutOfRangeError:
@@ -447,17 +446,26 @@ if options.trainModel:
 				saver.save(sess, outputFileName)
 				print ("Model saved: %s" % (outputFileName))
 
-			# Check the accuracy on test data
-			# Report loss on test data
-			batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
+			# Check the accuracy on validation set
+			averageTestLoss = 0.0
+			iterations = 0
+			try:
+				while True:
+					if options.evaluateStepDontSaveImages:
+						[testLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
+						print ("Test loss: %f" % testLoss)
 
-			if options.evaluateStepDontSaveImages:
-				[testLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
-				print ("Test loss: %f" % testLoss)
+					else:
+						[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={datasetSelectionPlaceholder: VAL})
+						print ("Test loss: %f" % testLoss)
+					
+					averageTestLoss += testLoss
+					iterations += 1
 
-			else:
-				[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={datasetSelectionPlaceholder: VAL})
-				print ("Test loss: %f" % testLoss)
+			except tf.errors.OutOfRangeError:
+				print('Testing on validation set completed!')
+			averageTestLoss /= iterations
+			print('Average validation error: %f' % (averageTestLoss))
 
 			# #Check the accuracy on test data
 			# if step % options.saveStepBest == 0:
