@@ -21,7 +21,7 @@ TRAIN = 0
 VAL = 1
 TEST = 2
 
-COLORS = np.array([[0,0,0], [0,128,0], [128,0,0], [224,224,192]])
+COLORS = np.array([[0, 0, 0], [0, 128, 0], [0, 0, 128], [192, 224, 224]]) # RGB
 LABELS = np.array([0, 1, 1, 2]) # Give high weight to the boundary
 
 # Command line options
@@ -237,20 +237,25 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 
 	return dataset
 
-def writeMaskToImage(mask, directory, fileName):
+def writeMaskToImage(img, mask, directory, fileName, overlay=True):
 	fileName = fileName[0].decode("utf-8") 
 	_, fileName = os.path.split(fileName) # Crop the complete path name
+	img = img[0]
 	mask = mask[0]
 	outputFileName = os.path.join(directory, fileName)
 	print ("Saving predicted segmentation mask:", outputFileName)
 
-	rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3))
+	rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.float32)
 	for color, label in zip(COLORS, LABELS):
 		binaryMap = mask[:, :, 0] == label
 		rgbMask[binaryMap, 0] = color[0]
 		rgbMask[binaryMap, 1] = color[1]
 		rgbMask[binaryMap, 2] = color[2]
 
+	if overlay:
+		rgbMask = np.uint8(cv2.addWeighted(img.astype(np.float32), 0.5, rgbMask, 0.5, 0.0))
+
+	# Write the resulting image to file
 	cv2.imwrite(outputFileName, rgbMask)
 
 # TODO: Add skip connections
@@ -460,12 +465,11 @@ if options.trainModel:
 
 					if step % options.displayStep == 0:
 						# Calculate batch loss
-						[fileName, trainLoss, predictedSegMask] = sess.run([inputBatchImageNames, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
-
+						[fileName, originalImage, trainLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
 						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
 						# Save image results
-						writeMaskToImage(predictedSegMask, options.imagesOutputDirectory, fileName)
+						writeMaskToImage(originalImage, predictedSegMask, options.imagesOutputDirectory, fileName)
 					step += 1
 
 			except tf.errors.OutOfRangeError:
@@ -487,11 +491,11 @@ if options.trainModel:
 						print ("Validation loss: %f" % valLoss)
 
 					else:
-						[fileName, valLoss, predictedSegMask] = sess.run([inputBatchImageNames, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
+						[fileName, originalImage, valLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
 						print ("Validation loss: %f" % valLoss)
 
 						# Save image results
-						writeMaskToImage(predictedSegMask, options.testImagesOutputDirectory, fileName)
+						writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
 					
 					averageValLoss += valLoss
 					iterations += 1
