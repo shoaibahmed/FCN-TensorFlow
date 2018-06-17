@@ -3,6 +3,7 @@
 import os
 import sys
 
+import cv2
 import numpy as np
 from optparse import OptionParser
 import datetime as dt
@@ -15,9 +16,13 @@ import shutil
 import wget
 import tarfile
 
+# Constants
 TRAIN = 0
 VAL = 1
 TEST = 2
+
+COLORS = np.array([[0,0,0], [0,128,0], [128,0,0], [224,224,192]])
+LABELS = np.array([0, 1, 1, 2]) # Give high weight to the boundary
 
 # Command line options
 parser = OptionParser()
@@ -40,6 +45,7 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 parser.add_option("--shufflePerBatch", action="store_true", dest="shufflePerBatch", default=False, help="Shuffle input for every batch")
 parser.add_option("--mapLabelsFromRGB", action="store_true", dest="mapLabelsFromRGB", default=False, help="Map labels from RGB to integers (if data is in form [H, W, 3])")
 parser.add_option("--useSparseLabels", action="store_true", dest="useSparseLabels", default=False, help="Use sparse labels (Mask shape: [H, W, 1] instead of [H, W, C] where C is the number of classes)")
+parser.add_option("--boundaryWeight", action="store", type="float", dest="boundaryWeight", default=10.0, help="Weight to be given to the boundary for computing the total loss")
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
@@ -51,6 +57,7 @@ parser.add_option("--saveStep", action="store", type="int", dest="saveStep", def
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
 parser.add_option("--evaluateStepDontSaveImages", action="store_true", dest="evaluateStepDontSaveImages", default=False, help="Don't save images on evaluate step")
 parser.add_option("--imagesOutputDirectory", action="store", type="string", dest="imagesOutputDirectory", default="./outputImages", help="Directory for saving output images")
+parser.add_option("--testImagesOutputDirectory", action="store", type="string", dest="testImagesOutputDirectory", default="./outputImagesTest", help="Directory for saving output images for test set")
 
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
@@ -157,8 +164,6 @@ def parseFunction(imgFileName, gtFileName):
 	if options.mapLabelsFromRGB:
 		assert False # Not working at this point
 		# TODO: Optimize this mapping
-		colors = np.array([[0,0,0], [0,128,0], [128,0,0], [224,224,192]])
-		labels = np.array([0, 1, 1, 2]) # Give high weight to the boundary
 		if options.useSparseLabels:
 			# raise NotImplementedError
 			maskNew = tf.zeros(shape=[tf.shape(mask)[0], tf.shape(mask)[1]])
@@ -232,9 +237,25 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 
 	return dataset
 
+def writeMaskToImage(mask, directory, fileName):
+	fileName = fileName[0].decode("utf-8") 
+	_, fileName = os.path.split(fileName) # Crop the complete path name
+	mask = mask[0]
+	outputFileName = os.path.join(directory, fileName)
+	print ("Saving predicted segmentation mask:", outputFileName)
+
+	rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3))
+	for color, label in zip(COLORS, LABELS):
+		binaryMap = mask[:, :, 0] == label
+		rgbMask[binaryMap, 0] = color[0]
+		rgbMask[binaryMap, 1] = color[1]
+		rgbMask[binaryMap, 2] = color[2]
+
+	cv2.imwrite(outputFileName, rgbMask)
+
 # TODO: Add skip connections
 # Performs the upsampling of the given images
-def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=64, filterSize=(3, 3), strides=(2, 2), padding='same'):
+def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same'):
 	with tf.name_scope('Decoder'), tf.variable_scope('Decoder'):
 		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
@@ -307,7 +328,7 @@ if options.trainModel:
 	print (endPoints.keys())
 	# exit (-1)
 	predictedLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
-	predictedMask = tf.expand_dims(tf.argmax(predictedLogits, axis=-1), -1)
+	predictedMask = tf.expand_dims(tf.argmax(predictedLogits, axis=-1), -1, name="predictedMasks")
 
 	if options.tensorboardVisualization:
 		tf.summary.image('Original Image', inputBatchImages, max_outputs=3)
@@ -322,9 +343,7 @@ if options.trainModel:
 
 		# Define loss
 		weights = tf.cast(inputMaskFlattened != options.ignoreLabel, dtype=tf.float32)
-		weights = tf.cond(pred=tf.equal(weights, 2), true_fn=lambda: 5.0, false_fn=lambda: weights) # TODO: High weight to the boundary
-		# crossEntropyLoss = tf.nn.weighted_cross_entropy_with_logits(targets=inputMask, logits=predictedMask, pos_weight=weights, name="weightedCrossEntropy")
-		# crossEntropyLoss = tf.reduce_sum(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=inputMaskFlattened, logits=predictedMaskFlattened, name="crossEntropy"))
+		weights = tf.cond(pred=tf.equal(weights, 2), true_fn=lambda: options.boundaryWeight, false_fn=lambda: weights)
 		crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened, weights=weights)
 		regLoss = options.weightDecayLambda * tf.reduce_sum(tf.losses.get_regularization_losses())
 		loss = crossEntropyLoss + regLoss
@@ -380,10 +399,17 @@ if options.trainModel:
 
 		if options.startTrainingFromScratch:
 			print ("Removing previous checkpoints and logs")
-			if os.path.exists(options.logsDir): shutil.rmtree(options.logsDir)
-			if os.path.exists(options.imagesOutputDirectory): shutil.rmtree(options.imagesOutputDirectory)
-			if os.path.exists(options.outputModelDir): shutil.rmtree(options.outputModelDir)
+			if os.path.exists(options.logsDir): 
+				shutil.rmtree(options.logsDir)
+			if os.path.exists(options.imagesOutputDirectory): 
+				shutil.rmtree(options.imagesOutputDirectory)
+			if os.path.exists(options.testImagesOutputDirectory): 
+				shutil.rmtree(options.testImagesOutputDirectory)
+			if os.path.exists(options.outputModelDir): 
+				shutil.rmtree(options.outputModelDir)
+			
 			os.makedirs(options.imagesOutputDirectory)
+			os.makedirs(options.testImagesOutputDirectory)
 			os.makedirs(options.outputModelDir)
 
 			# Load the pre-trained Inception ResNet v2 model
@@ -393,8 +419,8 @@ if options.trainModel:
 		# Restore checkpoint
 		else:
 			print ("Restoring from checkpoint")
-			saver = tf.train.import_meta_graph(options.outputModelDir + options.outputModelName + ".meta")
-			saver.restore(sess, options.outputModelDir + options.outputModelName)
+			saver = tf.train.import_meta_graph(os.path.join(options.outputModelDir, options.outputModelName + ".meta"))
+			saver.restore(sess, os.path.join(options.outputModelDir, options.outputModelName))
 
 		if options.tensorboardVisualization:
 			# Op for writing logs to Tensorboard
@@ -416,6 +442,7 @@ if options.trainModel:
 					if options.debug:
 						[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
 						print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
+						assert (predMask.shape == gtMask.shape).all(), "Error: Prediction and ground-truth shapes don't match"
 						if np.isnan(np.sum(predMask)):
 							print ("Error: NaN encountered!")
 							exit (-1)
@@ -426,23 +453,19 @@ if options.trainModel:
 					# Run optimization op (backprop)
 					if options.tensorboardVisualization:
 						_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						# Write logs at every iteration
-						summaryWriter.add_summary(summary, step)
+						summaryWriter.add_summary(summary, step) # Write logs at every iteration
 					else:
 						[trainLoss, _] = sess.run([loss, applyGradients], feed_dict={datasetSelectionPlaceholder: TRAIN})
 						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
 					if step % options.displayStep == 0:
 						# Calculate batch loss
-						# [trainLoss] = sess.run([loss], feed_dict={inputBatchImages: batchImagesTrain, inputBatchLabels: batchLabelsTrain})
-						[trainLoss, trainImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
+						[fileName, trainLoss, predictedSegMask] = sess.run([inputBatchImageNames, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
 
 						print ("Iteration: %d, Minibatch Loss: %f" % (step, trainLoss))
 
-						# # Save image results
-						# print ("Saving images")
-						# print (trainImagesProbabilityMap.shape)
-						# # inputReader.saveLastBatchResults(trainImagesProbabilityMap, isTrain=True)
+						# Save image results
+						writeMaskToImage(predictedSegMask, options.imagesOutputDirectory, fileName)
 					step += 1
 
 			except tf.errors.OutOfRangeError:
@@ -450,24 +473,27 @@ if options.trainModel:
 
 			if step % options.saveStep == 0:
 				# Save model weights to disk
-				outputFileName = options.outputModelDir + options.outputModelName
+				outputFileName = os.path.join(options.outputModelDir, options.outputModelName)
 				saver.save(sess, outputFileName)
 				print ("Model saved: %s" % (outputFileName))
 
 			# Check the accuracy on validation set
-			averageTestLoss = 0.0
+			averageValLoss = 0.0
 			iterations = 0
 			try:
 				while True:
 					if options.evaluateStepDontSaveImages:
-						[testLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
-						print ("Test loss: %f" % testLoss)
+						[valLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
+						print ("Validation loss: %f" % valLoss)
 
 					else:
-						[testLoss, testImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
-						print ("Test loss: %f" % testLoss)
+						[fileName, valLoss, predictedSegMask] = sess.run([inputBatchImageNames, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
+						print ("Validation loss: %f" % valLoss)
+
+						# Save image results
+						writeMaskToImage(predictedSegMask, options.testImagesOutputDirectory, fileName)
 					
-					averageTestLoss += testLoss
+					averageValLoss += valLoss
 					iterations += 1
 
 			except tf.errors.OutOfRangeError:
@@ -492,7 +518,7 @@ if options.trainModel:
 			# 		print ("Previous best accuracy: %f" % bestLoss)
 
 		# Save final model weights to disk
-		outputFileName = options.outputModelDir + options.outputModelName
+		outputFileName = os.path.join(options.outputModelDir, options.outputModelName)
 		saver.save(sess, outputFileName)
 		print ("Model saved: %s" % (outputFileName))
 
@@ -536,16 +562,17 @@ if options.trainModel:
 if options.testModel:
 	print ("Testing saved model")
 
-	shutil.rmtree(options.imagesOutputDirectory)
-	os.makedirs(options.imagesOutputDirectory)
+	if os.path.exists(options.testImagesOutputDirectory):
+		shutil.rmtree(options.testImagesOutputDirectory)
+	os.makedirs(options.testImagesOutputDirectory)
 	
 	# Now we make sure the variable is now a constant, and that the graph still produces the expected result.
-	with tf.Session() as session:
+	with tf.Session(config=config) as session:
 		saver = tf.train.import_meta_graph(options.modelDir + options.modelName + ".meta")
 		saver.restore(session, options.modelDir + options.modelName)
 
 		# Get reference to placeholders
-		outputNode = session.graph.get_tensor_by_name("Decoder/probabilities:0")
+		outputNode = session.graph.get_tensor_by_name("outputMask:0")
 		inputBatchImages = session.graph.get_tensor_by_name("inputBatchImages:0")
 		inputKeepProbability = session.graph.get_tensor_by_name("inputKeepProbability:0")
 	
