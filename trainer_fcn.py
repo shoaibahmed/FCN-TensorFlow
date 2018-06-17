@@ -179,15 +179,23 @@ def parseFunction(imgFileName, gtFileName):
 	return imgFileName, img, mask
 
 def dataAugmentationFunction(imgFileName, img, mask):
-    img = tf.image.random_flip_left_right(img)
+	with tf.name_scope('flipLR'):
+		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[]) # Random variable: two possible outcomes (0 or 1)
+		img = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_left_right(img), lambda: img)
+		mask = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_left_right(mask), lambda: mask)
 
-    img = tf.image.random_brightness(img, max_delta=32.0 / 255.0)
-    img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
+	with tf.name_scope('flipUD'):
+		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[]) # Random variable: two possible outcomes (0 or 1)
+		img = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_up_down(img), lambda: img)
+		mask = tf.cond(pred=tf.equal(randomVar, 0), lambda: tf.image.flip_up_down(mask), lambda: mask)
 
-    # Make sure the image is still in [0, 255]
-    img = tf.clip_by_value(img, 0.0, 255.0)
+	img = tf.image.random_brightness(img, max_delta=32.0 / 255.0)
+	img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
 
-    return imgFileName, img, mask
+	# Make sure the image is still in [0, 255]
+	img = tf.clip_by_value(img, 0.0, 255.0)
+
+	return imgFileName, img, mask
 
 def loadDataset(currentDataFile, dataAugmentation=False):
 	print ("Loading data from file: %s" % (currentDataFile))
@@ -286,8 +294,8 @@ if options.trainModel:
 			with slim.arg_scope(arg_scope):
 				# logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
 				with tf.variable_scope('InceptionResnetV2', 'InceptionResnetV2', [scaledInputBatchImages], reuse=None) as scope:
-				    with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
-				      net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
+					with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
+					  net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
 
 			variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
 
@@ -456,7 +464,7 @@ if options.trainModel:
 						print ("Test loss: %f" % testLoss)
 
 					else:
-						[testLoss, testImagesProbabilityMap] = sess.run([loss, vgg_fcn.probabilities], feed_dict={datasetSelectionPlaceholder: VAL})
+						[testLoss, testImagesProbabilityMap] = sess.run([loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
 						print ("Test loss: %f" % testLoss)
 					
 					averageTestLoss += testLoss
