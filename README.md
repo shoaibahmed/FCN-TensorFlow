@@ -19,4 +19,11 @@ The system supports two different models at this point, Inception ResNet v2 and 
 + **ResNeXt:** Add support for the ResNeXt model.
 + **Load un-encoded images:** The system cannot load unencoded images at this point (TF data loading pipeline) where RGB maps to label values.
 
-<br/><br/> Email: <b>12bscsssiddiqui@seecs.edu.pk</b>
+## License:
+
+MIT
+
+## Issues/Feedback:
+
+In case of any issues, feel free to drop me an email or open an issue on the repository.
+Email: **shoaib_ahmed.siddiqui@dfki.de**
