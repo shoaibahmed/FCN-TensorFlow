@@ -16,8 +16,9 @@ The system supports two different models at this point, Inception ResNet v2 and 
 
 + **NASNet model:** The system is not yet functional with the NASNet base.
 + **Skip connections:** The system is not yet integated with skip connections.
-+ **ResNeXt:** Add support for the ResNeXt model.
++ **Dense CRF:** Integrate CRF on top of the segmentation to have a smooth posterior distribution.
 + **Load un-encoded images:** The system cannot load unencoded images at this point (TF data loading pipeline) where RGB maps to label values.
++ **ResNeXt:** Add support for the ResNeXt model.
 
 ## License:
 
@@ -26,4 +27,5 @@ MIT
 ## Issues/Feedback:
 
 In case of any issues, feel free to drop me an email or open an issue on the repository.
+
 Email: **shoaib_ahmed.siddiqui@dfki.de**

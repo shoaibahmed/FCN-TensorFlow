@@ -56,8 +56,9 @@ parser.add_option("--displayStep", action="store", type="int", dest="displayStep
 parser.add_option("--saveStep", action="store", type="int", dest="saveStep", default=1000, help="Progress save step")
 parser.add_option("--evaluateStep", action="store", type="int", dest="evaluateStep", default=100000, help="Progress evaluation step")
 parser.add_option("--evaluateStepDontSaveImages", action="store_true", dest="evaluateStepDontSaveImages", default=False, help="Don't save images on evaluate step")
-parser.add_option("--imagesOutputDirectory", action="store", type="string", dest="imagesOutputDirectory", default="./outputImages", help="Directory for saving output images")
-parser.add_option("--testImagesOutputDirectory", action="store", type="string", dest="testImagesOutputDirectory", default="./outputImagesTest", help="Directory for saving output images for test set")
+parser.add_option("--trainImagesOutputDirectory", action="store", type="string", dest="trainImagesOutputDirectory", default="./outputImages_train", help="Directory for saving output images for train set")
+parser.add_option("--valImagesOutputDirectory", action="store", type="string", dest="valImagesOutputDirectory", default="./outputImages_val", help="Directory for saving output images for validation set")
+parser.add_option("--testImagesOutputDirectory", action="store", type="string", dest="testImagesOutputDirectory", default="./outputImages_test", help="Directory for saving output images for test set")
 
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
@@ -80,6 +81,11 @@ parser.add_option("--neuronAliveProbability", action="store", type="float", dest
 assert options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!"
 options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName)
 options.outputModelName = options.outputModelName + "_" + options.modelName
+
+options.trainImagesOutputDirectory = os.path.join(options.outputModelDir, options.trainImagesOutputDirectory)
+options.valImagesOutputDirectory = os.path.join(options.outputModelDir, options.valImagesOutputDirectory)
+options.testImagesOutputDirectory = os.path.join(options.outputModelDir, options.testImagesOutputDirectory)
+
 print (options)
 
 # Check if the pretrained directory exists
@@ -351,7 +357,7 @@ if options.trainModel:
 		weights = tf.cond(pred=tf.equal(weights, 2), true_fn=lambda: options.boundaryWeight, false_fn=lambda: weights)
 		crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened, weights=weights)
 		regLoss = options.weightDecayLambda * tf.reduce_sum(tf.losses.get_regularization_losses())
-		loss = crossEntropyLoss + regLoss
+		loss = tf.add(crossEntropyLoss, regLoss, name="totalLoss")
 
 	with tf.name_scope('Optimizer'):
 		# Define Optimizer
@@ -406,16 +412,19 @@ if options.trainModel:
 			print ("Removing previous checkpoints and logs")
 			if os.path.exists(options.logsDir): 
 				shutil.rmtree(options.logsDir)
-			if os.path.exists(options.imagesOutputDirectory): 
-				shutil.rmtree(options.imagesOutputDirectory)
+			if os.path.exists(options.trainImagesOutputDirectory): 
+				shutil.rmtree(options.trainImagesOutputDirectory)
+			if os.path.exists(options.valImagesOutputDirectory): 
+				shutil.rmtree(options.valImagesOutputDirectory)
 			if os.path.exists(options.testImagesOutputDirectory): 
 				shutil.rmtree(options.testImagesOutputDirectory)
 			if os.path.exists(options.outputModelDir): 
 				shutil.rmtree(options.outputModelDir)
 			
-			os.makedirs(options.imagesOutputDirectory)
-			os.makedirs(options.testImagesOutputDirectory)
 			os.makedirs(options.outputModelDir)
+			os.makedirs(options.trainImagesOutputDirectory)
+			os.makedirs(options.valImagesOutputDirectory)
+			os.makedirs(options.testImagesOutputDirectory)
 
 			# Load the pre-trained Inception ResNet v2 model
 			restorer = tf.train.Saver(variablesToRestore)
@@ -438,9 +447,7 @@ if options.trainModel:
 		for epoch in range(options.trainingEpochs):
 			# Initialize the dataset iterators
 			sess.run(trainIterator.initializer)
-			sess.run(valIterator.initializer)
-			sess.run(testIterator.initializer)
-
+			
 			try:
 				step = 0
 				while True:
@@ -469,8 +476,8 @@ if options.trainModel:
 						print ("Epoch: %d | Iteration: %d | Minibatch Loss: %f" % (epoch, step, trainLoss))
 
 						# Save image results
-						writeMaskToImage(originalImage, predictedSegMask, options.imagesOutputDirectory, fileName)
-					
+						writeMaskToImage(originalImage, predictedSegMask, options.trainImagesOutputDirectory, fileName)
+
 					step += 1
 					globalStep += 1
 
@@ -484,27 +491,25 @@ if options.trainModel:
 				print ("Model saved: %s" % (outputFileName))
 
 			# Check the accuracy on validation set
+			sess.run(valIterator.initializer)
 			averageValLoss = 0.0
 			iterations = 0
 			try:
 				while True:
-					if options.evaluateStepDontSaveImages:
-						[valLoss] = sess.run([loss], feed_dict={datasetSelectionPlaceholder: VAL})
-						
-					else:
-						[fileName, originalImage, valLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
-						
-						# Save image results
-						writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
+					[fileName, originalImage, valLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: VAL})
+					
+					# Save image results
+					writeMaskToImage(originalImage, predictedSegMask, options.valImagesOutputDirectory, fileName)
 
-					print ("Batch Validation loss: %f" % valLoss)
+					print ("Iteration: %d | Validation loss: %f" % (iterations, valLoss))
 					averageValLoss += valLoss
 					iterations += 1
 
 			except tf.errors.OutOfRangeError:
-				print('Testing on validation set completed!')
+				print('Evaluation on validation set completed!')
+
 			averageValLoss /= iterations
-			print('Average validation error: %f' % (averageValLoss))
+			print('Average validation loss: %f' % (averageValLoss))
 
 			# # Check the accuracy on test data
 			# if step % options.saveStepBest == 0:
@@ -526,41 +531,29 @@ if options.trainModel:
 		saver.save(sess, outputFileName)
 		print ("Model saved: %s" % (outputFileName))
 
-		# # Write Graph to file
-		# print ("Writing Graph to File")
-		# os.system("rm -rf " + options.graphDir)
-		# tf.train.write_graph(sess.graph_def, options.graphDir, options.inputGraphName, as_text=False) #proto
-
-		# # We save out the graph to disk, and then call the const conversion routine.
-		# inputGraphPath = options.graphDir + options.inputGraphName
-		# inputSaverDefPath = ""
-		# inputBinary = True
-		# # inputCheckpointPath = checkpointPrefix + "-0"
-		# inputCheckpointPath = options.checkpointDir + 'model.ckpt' + '-' + str(lastSaveStep)
-
-		# outputNodeNames = "Model/probabilities"
-		# restoreOpName = "save/restore_all"
-		# fileNameTensorName = "save/Const:0"
-		# outputGraphPath = options.graphDir + options.outputGraphName
-		# clearDevices = True
-
-		# freeze_graph.freeze_graph(inputGraphPath, inputSaverDefPath, inputBinary, inputCheckpointPath, outputNodeNames, restoreOpName, fileNameTensorName, outputGraphPath, clearDevices, "")
-
 		# Report loss on test data
-		testLoss = sess.run(loss, feed_dict={datasetSelectionPlaceholder: TEST})
-		print ("Test loss (current): %f" % testLoss)
+		sess.run(testIterator.initializer)
+		averageTestLoss = 0.0
+		iterations = 0
+		try:
+			while True:
+				[fileName, originalImage, testLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TEST})
+				
+				# Save image results
+				writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
 
-		print ("Optimization Finished!")
+				print ("Iteration: %d | Test loss: %f" % (iterations, testLoss))
+				averageTestLoss += testLoss
+				iterations += 1
 
-		# # Report accuracy on test data using best fitted model
-		# ckpt = tf.train.get_checkpoint_state(options.checkpointDir)
-		# if ckpt and ckpt.model_checkpoint_path:
-		# 	saver.restore(sess, ckpt.model_checkpoint_path)
+		except tf.errors.OutOfRangeError:
+			print('Evaluation on test set completed!')
 
-		# # Report loss on test data
-		# batchImagesTest, batchLabelsTest = inputReader.getTestBatch()
-		# testLoss = sess.run(loss, feed_dict={inputBatchImages: batchImagesTest, inputBatchLabels: batchLabelsTest, inputKeepProbability: 1.0})
-		# print ("Test loss (best model): %f" % testLoss)
+		averageTestLoss /= iterations
+		print('Average test loss: %f' % (averageTestLoss))
+
+		print ("Optimization completed!")
+
 
 if options.testModel:
 	print ("Testing saved model")
@@ -575,23 +568,26 @@ if options.testModel:
 		saver.restore(session, options.modelDir + options.modelName)
 
 		# Get reference to placeholders
-		outputNode = session.graph.get_tensor_by_name("outputMask:0")
-		inputBatchImages = session.graph.get_tensor_by_name("inputBatchImages:0")
-		inputKeepProbability = session.graph.get_tensor_by_name("inputKeepProbability:0")
-	
-		# sess.run(tf.initialize_all_variables())
-		# Sample 50 test batches
-		numBatches = 50
-		for i in range(1, numBatches):
-			print ("Prcessing batch # %d" % i)
-			batchImagesTest, batchLabelsTest = inputReader.getTestBatch(readMask = False) # For testing on datasets without GT mask
-			# output = session.run(outputNode, feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
-			[imagesProbabilityMap] = session.run([outputNode], feed_dict={inputBatchImages: batchImagesTest, inputKeepProbability: 1.0})
+		outputMaskNode = session.graph.get_tensor_by_name("outputMask:0")
+		lossNode = session.graph.get_tensor_by_name("Loss/totalLoss:0")
 
-			# Save image results
-			print ("Saving images")
-			# print (imagesProbabilityMap.shape)
-			imagesProbabilityMap = np.reshape(imagesProbabilityMap, [-1, options.imageHeight, options.imageWidth, options.numClasses])
-			inputReader.saveLastBatchResults(imagesProbabilityMap, isTrain=False)
+		iterations = 0
+		averageTestLoss = 0.0
+		try:
+			while True:
+				[fileName, originalImage, testLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, lossNode, outputMaskNode], feed_dict={datasetSelectionPlaceholder: TEST})
+				
+				# Save image results
+				writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
 
-	print ("Model tested")
+				print ("Iteration: %d | Test loss: %f" % (iterations, testLoss))
+				averageTestLoss += testLoss
+				iterations += 1
+
+		except tf.errors.OutOfRangeError:
+			print('Evluation on test set completed!')
+
+		averageTestLoss /= iterations
+		print('Average test loss: %f' % (averageTestLoss))
+
+	print ("Model evaluation completed!")
