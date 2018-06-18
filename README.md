@@ -5,7 +5,7 @@
 This repository provides a basic implementation of Fully-Convolutional Network in TensorFlow. The main script can be executed as:
 
 ```
-python trainer_fcn.py -trainModel -testModel -s --modelName IncResV2 --trainFileName ./data/train_pre_encoded.csv --valFileName ./data/val_pre_encoded.csv --testFileName ./data/val_pre_encoded.csv --trainingEpochs 50 --useSparseLabels --learningRate 1e-4 --weightDecayLambda 1e-6 --maxImageSize 1024 --tensorboardVisualization
+python trainer_fcn.py --trainModel --testModel -s --modelName IncResV2 --trainFileName ./data/train_pre_encoded.csv --valFileName ./data/val_pre_encoded.csv --testFileName ./data/val_pre_encoded.csv --trainingEpochs 50 --useSparseLabels --learningRate 1e-4 --weightDecayLambda 1e-6 --maxImageSize 1024 --tensorboardVisualization
 ```
 
 Since both the --trainModel and --testModel flags are passed to the system, the system will first train the model based on the given data followed by evaluation. -s flag specifies that the model has to be trained from scratch. If -s is not passed, the system will attempt to reload previous saved checkpoint. The system loads the pretrained ImageNet model if -s is passed.
