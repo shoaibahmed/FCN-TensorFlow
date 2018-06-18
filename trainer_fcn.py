@@ -249,7 +249,8 @@ def writeMaskToImage(img, mask, directory, fileName, overlay=True):
 	img = img[0]
 	mask = mask[0]
 	outputFileName = os.path.join(directory, fileName)
-	print ("Saving predicted segmentation mask:", outputFileName)
+	if options.debug:
+		print ("Saving predicted segmentation mask:", outputFileName)
 
 	rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.float32)
 	for color, label in zip(COLORS, LABELS):
@@ -305,97 +306,93 @@ inputBatchImageNames, inputBatchImages, inputBatchMasks = tf.cond(tf.equal(datas
 															lambda: tf.cond(tf.equal(datasetSelectionPlaceholder, VAL), lambda: valIterator.get_next(), lambda: testIterator.get_next()))
 print ("Data shape: %s | Mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchMasks.get_shape())))
 
-if options.trainModel:
-	with tf.name_scope('Model'):
-		# Data placeholders
-		# inputBatchImagesPlaceholder = tf.placeholder(dtype=tf.float32, shape=[None, None, None, options.imageChannels], name="inputBatchImages")
+# if options.trainModel:
+with tf.name_scope('Model'):
+	# Data placeholders
+	# inputBatchImagesPlaceholder = tf.placeholder(dtype=tf.float32, shape=[None, None, None, options.imageChannels], name="inputBatchImages")
 
-		# Scaling only for NASNet and IncResV2
-		scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImages)
-		scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
-		scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
+	# Scaling only for NASNet and IncResV2
+	scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImages)
+	scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
+	scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
 
-		# Create model
-		if options.modelName == "NASNet":
-			arg_scope = nasnet.nasnet_large_arg_scope()
-			with slim.arg_scope(arg_scope):
-				logits, endPoints = nasnet.build_nasnet_large(scaledInputBatchImages, is_training=False, num_classes=options.numClasses)
+	# Create model
+	if options.modelName == "NASNet":
+		arg_scope = nasnet.nasnet_large_arg_scope()
+		with slim.arg_scope(arg_scope):
+			logits, endPoints = nasnet.build_nasnet_large(scaledInputBatchImages, is_training=False, num_classes=options.numClasses)
 
-		elif options.modelName == "IncResV2":
-			arg_scope = inception_resnet_v2.inception_resnet_v2_arg_scope()
-			with slim.arg_scope(arg_scope):
-				# logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
-				with tf.variable_scope('InceptionResnetV2', 'InceptionResnetV2', [scaledInputBatchImages], reuse=None) as scope:
-					with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
-					  net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
+	elif options.modelName == "IncResV2":
+		arg_scope = inception_resnet_v2.inception_resnet_v2_arg_scope()
+		with slim.arg_scope(arg_scope):
+			# logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
+			with tf.variable_scope('InceptionResnetV2', 'InceptionResnetV2', [scaledInputBatchImages], reuse=None) as scope:
+				with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
+				  net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
 
-			variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
+		variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
 
-		else:
-			print ("Error: Model not found!")
-			exit (-1)
+	else:
+		print ("Error: Model not found!")
+		exit (-1)
 
-	# TODO: Attach the decoder to the encoder
-	print (endPoints.keys())
-	# exit (-1)
-	predictedLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
-	predictedMask = tf.expand_dims(tf.argmax(predictedLogits, axis=-1), -1, name="predictedMasks")
+# TODO: Attach the decoder to the encoder
+print (endPoints.keys())
+# exit (-1)
+predictedLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
+predictedMask = tf.expand_dims(tf.argmax(predictedLogits, axis=-1), -1, name="predictedMasks")
 
-	if options.tensorboardVisualization:
-		tf.summary.image('Original Image', inputBatchImages, max_outputs=3)
-		tf.summary.image('Desired Mask', tf.to_float(inputBatchMasks), max_outputs=3)
-		tf.summary.image('Predicted Mask', tf.to_float(predictedMask), max_outputs=3)
+if options.tensorboardVisualization:
+	tf.summary.image('Original Image', inputBatchImages, max_outputs=3)
+	tf.summary.image('Desired Mask', tf.to_float(inputBatchMasks), max_outputs=3)
+	tf.summary.image('Predicted Mask', tf.to_float(predictedMask), max_outputs=3)
 
-	with tf.name_scope('Loss'):
-		# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
-		predictedMaskFlattened = tf.reshape(predictedLogits, (-1, tf.shape(predictedLogits)[1] * tf.shape(predictedLogits)[2], options.numClasses), name="fcnLogits")
-		inputMaskFlattened = tf.reshape(inputBatchMasks, (-1, tf.shape(inputBatchMasks)[1] * tf.shape(inputBatchMasks)[2]))
-		# inputMaskFlattened = tf.layers.flatten(inputBatchMasks)
+with tf.name_scope('Loss'):
+	# Reshape 4D tensors to 2D, each row represents a pixel, each column a class
+	predictedMaskFlattened = tf.reshape(predictedLogits, (-1, tf.shape(predictedLogits)[1] * tf.shape(predictedLogits)[2], options.numClasses), name="fcnLogits")
+	inputMaskFlattened = tf.reshape(inputBatchMasks, (-1, tf.shape(inputBatchMasks)[1] * tf.shape(inputBatchMasks)[2]))
+	# inputMaskFlattened = tf.layers.flatten(inputBatchMasks)
 
-		# Define loss
-		weights = tf.cast(inputMaskFlattened != options.ignoreLabel, dtype=tf.float32)
-		weights = tf.cond(pred=tf.equal(weights, 2), true_fn=lambda: options.boundaryWeight, false_fn=lambda: weights)
-		crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened, weights=weights)
-		regLoss = options.weightDecayLambda * tf.reduce_sum(tf.losses.get_regularization_losses())
-		loss = tf.add(crossEntropyLoss, regLoss, name="totalLoss")
+	# Define loss
+	weights = tf.cast(inputMaskFlattened != options.ignoreLabel, dtype=tf.float32)
+	weights = tf.cond(pred=tf.equal(weights, 2), true_fn=lambda: options.boundaryWeight, false_fn=lambda: weights)
+	crossEntropyLoss = tf.losses.sparse_softmax_cross_entropy(labels=inputMaskFlattened, logits=predictedMaskFlattened, weights=weights)
+	regLoss = options.weightDecayLambda * tf.reduce_sum(tf.losses.get_regularization_losses())
+	loss = tf.add(crossEntropyLoss, regLoss, name="totalLoss")
 
-	with tf.name_scope('Optimizer'):
-		# Define Optimizer
-		optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate)
+with tf.name_scope('Optimizer'):
+	# Define Optimizer
+	optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate)
 
-		# Op to calculate every variable gradient
-		gradients = tf.gradients(loss, tf.trainable_variables())
-		gradients = list(zip(gradients, tf.trainable_variables()))
-		# Op to update all variables according to their gradient
-		applyGradients = optimizer.apply_gradients(grads_and_vars=gradients)
+	# Op to calculate every variable gradient
+	gradients = tf.gradients(loss, tf.trainable_variables())
+	gradients = list(zip(gradients, tf.trainable_variables()))
+	# Op to update all variables according to their gradient
+	applyGradients = optimizer.apply_gradients(grads_and_vars=gradients)
 
-	# Initializing the variables
-	init = tf.global_variables_initializer()
-	init_local = tf.local_variables_initializer()
+# Initializing the variables
+init = tf.global_variables_initializer()
+init_local = tf.local_variables_initializer()
 
-	if options.tensorboardVisualization:
-		# Create a summary to monitor cost tensor
-		tf.summary.scalar("reg_loss", regLoss)
-		tf.summary.scalar("cross_entropy", crossEntropyLoss)
-		tf.summary.scalar("total_loss", loss)
+if options.tensorboardVisualization:
+	# Create a summary to monitor cost tensor
+	tf.summary.scalar("reg_loss", regLoss)
+	tf.summary.scalar("cross_entropy", crossEntropyLoss)
+	tf.summary.scalar("total_loss", loss)
 
-		# Create summaries to visualize weights
-		for var in tf.trainable_variables():
-			tf.summary.histogram(var.name, var)
-		# Summarize all gradients
-		for grad, var in gradients:
-			if grad is not None:
-				tf.summary.histogram(var.name + '/gradient', grad)
+	# Create summaries to visualize weights
+	for var in tf.trainable_variables():
+		tf.summary.histogram(var.name, var)
+	# Summarize all gradients
+	for grad, var in gradients:
+		if grad is not None:
+			tf.summary.histogram(var.name + '/gradient', grad)
 
-		# Merge all summaries into a single op
-		mergedSummaryOp = tf.summary.merge_all()
+	# Merge all summaries into a single op
+	mergedSummaryOp = tf.summary.merge_all()
 
-	# 'Saver' op to save and restore all the variables
-	saver = tf.train.Saver()
-	# bestModelSaver = tf.train.Saver()
-
-	bestLoss = 1e9
-	step = 1
+# 'Saver' op to save and restore all the variables
+saver = tf.train.Saver()
 
 # GPU config
 config = tf.ConfigProto()
@@ -563,19 +560,22 @@ if options.testModel:
 	os.makedirs(options.testImagesOutputDirectory)
 	
 	# Now we make sure the variable is now a constant, and that the graph still produces the expected result.
-	with tf.Session(config=config) as session:
-		saver = tf.train.import_meta_graph(options.modelDir + options.modelName + ".meta")
-		saver.restore(session, options.modelDir + options.modelName)
+	with tf.Session(config=config) as sess:
+		modelFileName = os.path.join(options.outputModelDir, options.outputModelName)
+		# saver = tf.train.import_meta_graph(modelFileName + ".meta")
+		saver.restore(sess, modelFileName)
 
-		# Get reference to placeholders
-		outputMaskNode = session.graph.get_tensor_by_name("outputMask:0")
-		lossNode = session.graph.get_tensor_by_name("Loss/totalLoss:0")
+		# # Get reference to placeholders
+		# outputMaskNode = sess.graph.get_tensor_by_name("predictedMasks:0")
+		# lossNode = sess.graph.get_tensor_by_name("Loss/totalLoss:0")
+		# datasetSelectionPlaceholderNode = sess.graph.get_tensor_by_name("DatasetSelectionPlaceholder:0")
 
+		sess.run(testIterator.initializer)
 		iterations = 0
 		averageTestLoss = 0.0
 		try:
 			while True:
-				[fileName, originalImage, testLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, lossNode, outputMaskNode], feed_dict={datasetSelectionPlaceholder: TEST})
+				[fileName, originalImage, testLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TEST})
 				
 				# Save image results
 				writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
