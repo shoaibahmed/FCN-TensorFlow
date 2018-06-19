@@ -157,15 +157,15 @@ else:
 def parseFunction(imgFileName, gtFileName):
 	# TODO: Replace with decode_image (decode_image doesn't return shape)
 	# Load the original image
-	image_string = tf.read_file(imgFileName)
-	img = tf.image.decode_jpeg(image_string)
+	imageString = tf.read_file(imgFileName)
+	img = tf.image.decode_jpeg(imageString)
 	img = tf.image.resize_images(img, [options.maxImageSize, options.maxImageSize], preserve_aspect_ratio=True)
 	img.set_shape([None, None, options.imageChannels])
 	img = tf.cast(img, tf.float32) # Convert to float tensor
 
 	# Load the segmentation mask
-	image_string = tf.read_file(gtFileName)
-	mask = tf.image.decode_png(image_string)
+	imageString = tf.read_file(gtFileName)
+	mask = tf.image.decode_png(imageString)
 
 	if options.mapLabelsFromRGB:
 		assert False # Not working at this point
@@ -478,7 +478,7 @@ if options.trainModel:
 					if options.debug:
 						[predMask, gtMask] = sess.run([predictedMask, inputBatchMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
 						print ("Prediction shape: %s | GT shape: %s" % (str(predMask.shape), str(gtMask.shape)))
-						assert (predMask.shape == gtMask.shape).all(), "Error: Prediction and ground-truth shapes don't match"
+						assert (predMask.shape == gtMask.shape), "Error: Prediction and ground-truth shapes don't match"
 						if np.isnan(np.sum(predMask)):
 							print ("Error: NaN encountered!")
 							exit (-1)
@@ -486,11 +486,10 @@ if options.trainModel:
 						print ("Unique labels in prediction:", np.unique(predMask))
 						print ("Unique labels in GT:", np.unique(gtMask))
 
-						# Only useful for static shapes
-						endPointsOutput = sess.run(endPoints, feed_dict={datasetSelectionPlaceholder: TRAIN})
-						for idx, endPointName in enumerate(endPoints):
-							print ("End point: %s | Shape: %s" % (endPointName, str(endPointsOutput[idx].shape)))
-						exit(-1)
+						# Verify end point shapes
+						for endPointName in endPoints:
+							endPointOutput = sess.run(endPoints[endPointName], feed_dict={datasetSelectionPlaceholder: TRAIN})
+							print ("End point: %s | Shape: %s" % (endPointName, str(endPointOutput.shape)))
 
 					# Run optimization op (backprop)
 					if options.tensorboardVisualization:
