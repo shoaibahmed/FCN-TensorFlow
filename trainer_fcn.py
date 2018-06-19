@@ -72,7 +72,7 @@ parser.add_option("-m", "--modelName", action="store", dest="modelName", default
 parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=3, help="Number of classes")
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
-parser.add_option("--neuronAliveProbability", action="store", type="float", dest="neuronAliveProbability", default=0.5, help="Probability of keeping a neuron active during training")
+parser.add_option("--useSkipConnections", action="store_true", dest="useSkipConnections", default=False, help="Whether to use skip connections or not")
 
 # Parse command line options
 (options, args) = parser.parse_args()
@@ -270,15 +270,40 @@ def writeMaskToImage(img, mask, directory, fileName, overlay=True):
 def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same'):
 	with tf.name_scope('Decoder'), tf.variable_scope('Decoder'):
 		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
+		if options.useSkipConnections:
+			endPointName = 'Mixed_6a'
+			endPoint = endPoints[endPointName]
+			encShape = tf.shape(endPoint)
+			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
 		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		if options.useSkipConnections:
+			endPointName = 'MaxPool_5a_3x3'
+			endPoint = endPoints[endPointName]
+			encShape = tf.shape(endPoint)
+			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
 		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		if options.useSkipConnections:
+			endPointName = 'Conv2d_4a_3x3'
+			endPoint = endPoints[endPointName]
+			encShape = tf.shape(endPoint)
+			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
 		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		if options.useSkipConnections:
+			# out = out + tf.layers.conv2d(endPoints['Conv2d_2b_3x3'], numFilters, (1, 1), strides=(1, 1), padding='same')
+			endPointName = 'Conv2d_2b_3x3'
+			endPoint = endPoints[endPointName]
+			encShape = tf.shape(endPoint)
+			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
 		# Match dimensions (convolutions with 'valid' padding reducing the dimensions)
@@ -338,7 +363,8 @@ with tf.name_scope('Model'):
 
 # TODO: Attach the decoder to the encoder
 print (endPoints.keys())
-# exit (-1)
+if options.useSkipConnections:
+	print ("Adding skip connections from the encoder to the decoder!")
 predictedLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
 predictedMask = tf.expand_dims(tf.argmax(predictedLogits, axis=-1), -1, name="predictedMasks")
 
@@ -459,6 +485,12 @@ if options.trainModel:
 
 						print ("Unique labels in prediction:", np.unique(predMask))
 						print ("Unique labels in GT:", np.unique(gtMask))
+
+						# Only useful for static shapes
+						endPointsOutput = sess.run(endPoints, feed_dict={datasetSelectionPlaceholder: TRAIN})
+						for idx, endPointName in enumerate(endPoints):
+							print ("End point: %s | Shape: %s" % (endPointName, str(endPointsOutput[idx].shape)))
+						exit(-1)
 
 					# Run optimization op (backprop)
 					if options.tensorboardVisualization:
