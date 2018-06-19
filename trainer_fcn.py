@@ -16,6 +16,11 @@ import shutil
 import wget
 import tarfile
 
+try:
+	import pydensecrf.densecrf as dcrf
+except:
+	print("Error: Failed to import pydensecrf! CRF post-processing will not work.")
+
 # Constants
 TRAIN = 0
 VAL = 1
@@ -39,13 +44,12 @@ parser.add_option("--valFileName", action="store", type="string", dest="valFileN
 parser.add_option("--testFileName", action="store", type="string", dest="testFileName", default="./data/test.csv", help="File containing the test file names")
 parser.add_option("--statsFileName", action="store", type="string", dest="statsFileName", default="stats.txt", help="Image database statistics (mean, var)")
 parser.add_option("--maxImageSize", action="store", type="int", dest="maxImageSize", default=2048, help="Maximum size of the larger dimension while preserving aspect ratio")
-# parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=640, help="Image width for feeding into the network")
-# parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=512, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in image for feeding into the network")
 parser.add_option("--shufflePerBatch", action="store_true", dest="shufflePerBatch", default=False, help="Shuffle input for every batch")
 parser.add_option("--mapLabelsFromRGB", action="store_true", dest="mapLabelsFromRGB", default=False, help="Map labels from RGB to integers (if data is in form [H, W, 3])")
 parser.add_option("--useSparseLabels", action="store_true", dest="useSparseLabels", default=False, help="Use sparse labels (Mask shape: [H, W, 1] instead of [H, W, C] where C is the number of classes)")
 parser.add_option("--boundaryWeight", action="store", type="float", dest="boundaryWeight", default=10.0, help="Weight to be given to the boundary for computing the total loss")
+parser.add_option("--numParallelLoaders", action="store", type="int", dest="numParallelLoaders", default=8, help="Number of parallel loaders to be used for data loading")
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
@@ -62,7 +66,6 @@ parser.add_option("--testImagesOutputDirectory", action="store", type="string", 
 
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
-# parser.add_option("--checkpointDir", action="store", type="string", dest="checkpointDir", default="./checkpoints/", help="Directory for saving checkpoints")
 parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
 parser.add_option("--outputModelDir", action="store", type="string", dest="outputModelDir", default="./output/", help="Directory for saving the model")
 parser.add_option("--outputModelName", action="store", type="string", dest="outputModelName", default="Model", help="Name to be used for saving the model")
@@ -72,7 +75,8 @@ parser.add_option("-m", "--modelName", action="store", dest="modelName", default
 parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=3, help="Number of classes")
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
-parser.add_option("--useSkipConnections", action="store_true", dest="useSkipConnections", default=False, help="Whether to use skip connections or not")
+parser.add_option("--useSkipConnections", action="store_true", dest="useSkipConnections", default=False, help="Use skip connections or not")
+parser.add_option("--useCRFPostProcessing", action="store_true", dest="useCRFPostProcessing", default=False, help="Use CRF based post-processing")
 
 # Parse command line options
 (options, args) = parser.parse_args()
@@ -229,11 +233,11 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 	print ("Number of files found: %d" % (numFiles))
 
 	dataset = tf.data.Dataset.from_tensor_slices((originalImageNames, maskImageNames))
-	dataset = dataset.map(parseFunction, num_parallel_calls=4)
+	dataset = dataset.map(parseFunction, num_parallel_calls=options.numParallelLoaders)
 
 	# Data augmentation
 	if dataAugmentation:
-		dataset = dataset.map(dataAugmentationFunction, num_parallel_calls=4)
+		dataset = dataset.map(dataAugmentationFunction, num_parallel_calls=options.numParallelLoaders)
 
 	# Data shuffling
 	if options.shufflePerBatch:
@@ -243,12 +247,13 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 
 	return dataset
 
-def writeMaskToImage(img, mask, directory, fileName, overlay=True):
+def writeMaskToImage(img, mask, directory, fileName, append='', overlay=True):
 	fileName = fileName[0].decode("utf-8") 
 	_, fileName = os.path.split(fileName) # Crop the complete path name
 	img = img[0]
 	mask = mask[0]
-	outputFileName = os.path.join(directory, fileName)
+	fileNameRoot, fileNameExt = os.path.splitext(fileName)
+	outputFileName = os.path.join(directory, fileNameRoot + append + fileNameExt)
 	if options.debug:
 		print ("Saving predicted segmentation mask:", outputFileName)
 
@@ -608,8 +613,27 @@ if options.testModel:
 			while True:
 				[fileName, originalImage, testLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TEST})
 				
+				if options.useCRFPostProcessing:
+					# TODO: Incorporate dense CRF
+					unary = predictedSegMask[0]
+					unary = -np.log(unary)
+					unary = unary.transpose(1, 0, 2)
+					w, h, c = unary.shape
+					unary = unary.transpose(1, 0, 2).reshape(options.numClasses, -1)
+					unary = np.ascontiguousarray(unary)
+					resizedImg = np.ascontiguousarray(originalImage[0])
+
+					d = dcrf.DenseCRF2D(w, h, options.numClasses)
+					d.setUnaryEnergy(unary)
+					d.addPairwiseBilateral(sxy=5, srgb=3, rgbim=resizedImg, compat=1)
+
+					q = d.inference(50)
+					mask = np.argmax(q, axis=0).reshape(w, h).transpose(1, 0)
+					decodedCRF = loader.decode_segmap(np.array(mask, dtype=np.uint8))
+					
 				# Save image results
 				writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
+				writeMaskToImage(originalImage, decodedCRF, options.testImagesOutputDirectory, fileName, append='-crf')
 
 				print ("Iteration: %d | Test loss: %f" % (iterations, testLoss))
 				averageTestLoss += testLoss
