@@ -16,11 +16,6 @@ import shutil
 import wget
 import tarfile
 
-try:
-	import pydensecrf.densecrf as dcrf
-except:
-	print("Error: Failed to import pydensecrf! CRF post-processing will not work.")
-
 # Constants
 TRAIN = 0
 VAL = 1
@@ -83,6 +78,12 @@ parser.add_option("--useCRFPostProcessing", action="store_true", dest="useCRFPos
 
 # Verification
 assert options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!"
+try:
+	import pydensecrf.densecrf as dcrf
+except:
+	# print("Error: Failed to import pydensecrf! CRF post-processing will not work.")
+	assert not options.useCRFPostProcessing, "Error: Failed to import pydensecrf!"
+
 options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName)
 options.outputModelName = options.outputModelName + "_" + options.modelName
 
@@ -611,17 +612,20 @@ if options.testModel:
 		averageTestLoss = 0.0
 		try:
 			while True:
-				[fileName, originalImage, testLoss, predictedSegMask] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask], feed_dict={datasetSelectionPlaceholder: TEST})
+				[fileName, originalImage, testLoss, predictedSegMask. predictedSegLogits] = sess.run([inputBatchImageNames, inputBatchImages, loss, predictedMask, predictedLogits], feed_dict={datasetSelectionPlaceholder: TEST})
+
+				# Save image results
+				writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
 				
 				if options.useCRFPostProcessing:
 					# TODO: Incorporate dense CRF
-					unary = predictedSegMask[0]
+					unary = predictedSegLogits[0]
 					unary = -np.log(unary)
 					unary = unary.transpose(1, 0, 2)
 					w, h, c = unary.shape
 					unary = unary.transpose(1, 0, 2).reshape(options.numClasses, -1)
 					unary = np.ascontiguousarray(unary)
-					resizedImg = np.ascontiguousarray(originalImage[0])
+					resizedImg = np.ascontiguousarray(originalImage[0]).astype(np.uint8)
 
 					d = dcrf.DenseCRF2D(w, h, options.numClasses)
 					d.setUnaryEnergy(unary)
@@ -629,11 +633,10 @@ if options.testModel:
 
 					q = d.inference(50)
 					mask = np.argmax(q, axis=0).reshape(w, h).transpose(1, 0)
-					decodedCRF = loader.decode_segmap(np.array(mask, dtype=np.uint8))
+					mask = np.array(mask, dtype=np.uint8)[np.newaxis, :, :, np.newaxis]
 					
-				# Save image results
-				writeMaskToImage(originalImage, predictedSegMask, options.testImagesOutputDirectory, fileName)
-				writeMaskToImage(originalImage, decodedCRF, options.testImagesOutputDirectory, fileName, append='-crf')
+					# Save image results
+					writeMaskToImage(originalImage, mask, options.testImagesOutputDirectory, fileName, append='-crf')
 
 				print ("Iteration: %d | Test loss: %f" % (iterations, testLoss))
 				averageTestLoss += testLoss
