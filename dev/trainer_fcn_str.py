@@ -654,13 +654,28 @@ if options.testModel:
 						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations = 1)
 						edges = cv2.Canny(newImage, 50, 150, apertureSize = 3)
 						# cv2.imwrite('canny.jpg',edges)
-						minVotes = int(newImage.shape[1] / 4.0) # Row rows => width / 4
-						if idx == 1:
-							minVotes = int(newImage.shape[0] / 4.0) # For cols => height / 4
-						lines = cv2.HoughLines(edges, 1, np.pi/2, minVotes)
+						minVotes = int(newImage.shape[1] / 5.0) # Row rows => width / constantDivisor
+						if idx == 1: # If column
+							minVotes = int(newImage.shape[0] / 8.0) # For cols => height / constantDivisor
+						lines = cv2.HoughLines(edges, 1, (np.pi if idx == 1 else np.pi / 2), minVotes)
 						img = originalImage[0].copy()
 						# print ("Lines shape:", lines.shape)
 						if lines is not None:
+							# Filter only horizontal or vertical lines
+							newLines = []
+							numRejectedLines = 0
+							for i in range(0, len(lines)):
+								theta = lines[i][0][1]
+								theta = int(theta * (180.0 / np.pi)) # Convert radians to degrees
+								# Any vertical line will have 0 degree and horizontal lines will have 90 degree
+								if ((idx == 1) and (theta != 0)) or ((idx == 0) and (theta != 90)):
+									numRejectedLines += 1
+								else:
+									newLines.append(lines[i])
+							
+							lines = newLines
+							print ("Number of lines rejected:", numRejectedLines)
+
 							# Cluster the lines
 							from sklearn.cluster import MeanShift
 							meanShift = MeanShift(bandwidth=15.0)
@@ -668,7 +683,6 @@ if options.testModel:
 							clusterNumbers = np.unique(clusters)
 							clusterCenters = meanShift.cluster_centers_
 							print ("Number of clusters found:", len(clusterNumbers))
-							# print ("Cluster centers:", clusterCenters)
 
 							for i in range(0, len(lines)):
 								rho = lines[i][0][0]
@@ -700,8 +714,8 @@ if options.testModel:
 
 								cv2.line(img,(x1,y1),(x2,y2),(0,0,255),2)
 
-							processedMasks.append(img[np.newaxis, :, :, :])
-							processedImages.append(newImage[np.newaxis, :, :, np.newaxis])
+						processedMasks.append(img[np.newaxis, :, :, :])
+						processedImages.append(newImage[np.newaxis, :, :, np.newaxis])
 
 					# Save image results
 					writeMaskToImage(None, processedMasks[0], processedMasks[1], options.testImagesOutputDirectory, fileName, append='-hough')
