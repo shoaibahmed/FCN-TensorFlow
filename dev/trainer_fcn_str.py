@@ -71,6 +71,7 @@ parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest=
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=3, help="Number of classes")
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
 parser.add_option("--useSkipConnections", action="store_true", dest="useSkipConnections", default=False, help="Use skip connections or not")
+parser.add_option("--performBoundaryDetection", action="store_true", dest="performBoundaryDetection", default=False, help="Perform boundary detection using Hough line transform")
 parser.add_option("--useCRFPostProcessing", action="store_true", dest="useCRFPostProcessing", default=False, help="Use CRF based post-processing")
 
 # Parse command line options
@@ -261,7 +262,8 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', overlay=True):
 	fileName = fileName[0].decode("utf-8") 
 	_, fileName = os.path.split(fileName) # Crop the complete path name
-	img = img[0]
+	if img is not None:
+		img = img[0]
 	rowMask = rowMask[0]
 	colMask = colMask[0]
 	fileNameRoot, fileNameExt = os.path.splitext(fileName)
@@ -271,18 +273,21 @@ def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', over
 		if options.debug:
 			print ("Saving predicted segmentation mask:", outputFileName)
 
-		rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.float32)
-		for color, label in zip(COLORS, LABELS):
-			binaryMap = mask[:, :, 0] == label
-			rgbMask[binaryMap, 0] = color[0]
-			rgbMask[binaryMap, 1] = color[1]
-			rgbMask[binaryMap, 2] = color[2]
+		if img is not None:
+			rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.float32)
+			for color, label in zip(COLORS, LABELS):
+				binaryMap = mask[:, :, 0] == label
+				rgbMask[binaryMap, 0] = color[0]
+				rgbMask[binaryMap, 1] = color[1]
+				rgbMask[binaryMap, 2] = color[2]
 
-		if overlay:
-			rgbMask = np.uint8(cv2.addWeighted(img.astype(np.float32), 0.5, rgbMask, 0.5, 0.0))
+			if overlay:
+				rgbMask = np.uint8(cv2.addWeighted(img.astype(np.float32), 0.5, rgbMask, 0.5, 0.0))
 
-		# Write the resulting image to file
-		cv2.imwrite(outputFileName, rgbMask)
+			# Write the resulting image to file
+			cv2.imwrite(outputFileName, rgbMask)
+		else:
+			cv2.imwrite(outputFileName, mask)
 
 # TODO: Add skip connections
 # Performs the upsampling of the given images
@@ -637,7 +642,71 @@ if options.testModel:
 
 				# Save image results
 				writeMaskToImage(originalImage, predictedRowSegMask, predictedColSegMask, options.testImagesOutputDirectory, fileName)
-				
+
+				if options.performBoundaryDetection:
+					processedMasks = []
+					processedImages = []
+					for idx, mask in enumerate([predictedRowSegMask, predictedColSegMask]):
+						# Use hough transform to infer lines
+						booleanMask = mask[0, :, :, 0] == (options.numClasses - 1)
+						newImage = np.zeros(booleanMask.shape, dtype=np.uint8)
+						newImage[booleanMask] = 255
+						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations = 1)
+						edges = cv2.Canny(newImage, 50, 150, apertureSize = 3)
+						# cv2.imwrite('canny.jpg',edges)
+						minVotes = int(newImage.shape[1] / 4.0) # Row rows => width / 4
+						if idx == 1:
+							minVotes = int(newImage.shape[0] / 4.0) # For cols => height / 4
+						lines = cv2.HoughLines(edges, 1, np.pi/2, minVotes)
+						img = originalImage[0].copy()
+						# print ("Lines shape:", lines.shape)
+						if lines is not None:
+							# Cluster the lines
+							from sklearn.cluster import MeanShift
+							meanShift = MeanShift(bandwidth=15.0)
+							clusters = meanShift.fit_predict(np.array(lines)[:, 0, :])
+							clusterNumbers = np.unique(clusters)
+							clusterCenters = meanShift.cluster_centers_
+							print ("Number of clusters found:", len(clusterNumbers))
+							# print ("Cluster centers:", clusterCenters)
+
+							for i in range(0, len(lines)):
+								rho = lines[i][0][0]
+								theta = lines[i][0][1]
+								# if (idx == 0 and theta != 0) or (idx == 1 and theta != 90):
+								# 	return
+								a = np.cos(theta)
+								b = np.sin(theta)
+								x0 = a*rho
+								y0 = b*rho
+								x1 = int(x0 + 1000*(-b))
+								y1 = int(y0 + 1000*(a))
+								x2 = int(x0 - 1000*(-b))
+								y2 = int(y0 - 1000*(a))
+
+								cv2.line(img,(x1,y1),(x2,y2),(0,255,0),2)
+
+							for i in range(0, clusterCenters.shape[0]):
+								rho = clusterCenters[i, 0]
+								theta = clusterCenters[i, 1]
+								a = np.cos(theta)
+								b = np.sin(theta)
+								x0 = a*rho
+								y0 = b*rho
+								x1 = int(x0 + 1000*(-b))
+								y1 = int(y0 + 1000*(a))
+								x2 = int(x0 - 1000*(-b))
+								y2 = int(y0 - 1000*(a))
+
+								cv2.line(img,(x1,y1),(x2,y2),(0,0,255),2)
+
+							processedMasks.append(img[np.newaxis, :, :, :])
+							processedImages.append(newImage[np.newaxis, :, :, np.newaxis])
+
+					# Save image results
+					writeMaskToImage(None, processedMasks[0], processedMasks[1], options.testImagesOutputDirectory, fileName, append='-hough')
+					writeMaskToImage(None, processedImages[0], processedImages[1], options.testImagesOutputDirectory, fileName, append='-hough-debug')
+					
 				if options.useCRFPostProcessing:
 					# TODO: Incorporate dense CRF
 					processedMasks = []
