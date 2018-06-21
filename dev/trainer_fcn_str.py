@@ -70,7 +70,9 @@ parser.add_option("-m", "--modelName", action="store", dest="modelName", default
 parser.add_option("-s", "--startTrainingFromScratch", action="store_true", dest="startTrainingFromScratch", default=False, help="Start training from scratch")
 parser.add_option("--numClasses", action="store", type="int", dest="numClasses", default=3, help="Number of classes")
 parser.add_option("--ignoreLabel", action="store", type="int", dest="ignoreLabel", default=255, help="Label to ignore for loss computation")
-parser.add_option("--useSkipConnections", action="store_true", dest="useSkipConnections", default=False, help="Use skip connections or not")
+parser.add_option("--useSkipConnections", action="store_true", dest="useSkipConnections", default=False, help="Use skip connections")
+parser.add_option("--concatenateFeatureMaps", action="store_true", dest="concatenateFeatureMaps", default=False, help="Concatenate feature maps instead of point-wise summation")
+parser.add_option("--useDeformableConvolution", action="store_true", dest="useDeformableConvolution", default=False, help="Use deformable convolution")
 parser.add_option("--performBoundaryDetection", action="store_true", dest="performBoundaryDetection", default=False, help="Perform boundary detection using Hough line transform")
 parser.add_option("--useCRFPostProcessing", action="store_true", dest="useCRFPostProcessing", default=False, help="Use CRF based post-processing")
 
@@ -85,8 +87,11 @@ except:
 	# print("Error: Failed to import pydensecrf! CRF post-processing will not work.")
 	assert not options.useCRFPostProcessing, "Error: Failed to import pydensecrf!"
 
-options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName)
+options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName + "_concat" if options.concatenateFeatureMaps else "_sum")
 options.outputModelName = options.outputModelName + "_" + options.modelName
+if options.useDeformableConvolution:
+	options.outputModelDir += "_deform"
+	options.outputModelName += "_deform"
 
 options.trainImagesOutputDirectory = os.path.join(options.outputModelDir, options.trainImagesOutputDirectory)
 options.valImagesOutputDirectory = os.path.join(options.outputModelDir, options.valImagesOutputDirectory)
@@ -289,16 +294,26 @@ def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', over
 		else:
 			cv2.imwrite(outputFileName, mask)
 
-# TODO: Add skip connections
 # Performs the upsampling of the given images
 def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same'):
+	if options.useDeformableConvolution:
+		# Attach deformable convolution head here
+		import tensorlayer
+		with tf.name_scope('DeformableConv'):
+			net = activation(net)
+			offset1 = tl.layers.Conv2d(net, 18, (3, 3), (1, 1), act=act, padding='SAME', name='offset')
+			net = tl.layers.DeformableConv2d(net, offset1, numFilters, (3, 3), act=act, name='deformable')
+
 	with tf.name_scope('Decoder'), tf.variable_scope('Decoder'):
 		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
 		if options.useSkipConnections:
 			endPointName = 'Mixed_6a'
 			endPoint = endPoints[endPointName]
 			encShape = tf.shape(endPoint)
-			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+			if options.concatenateFeatureMaps:
+				out = tf.concat((tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True), endPoint), axis=-1)
+			else:
+				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
@@ -307,7 +322,10 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 			endPointName = 'MaxPool_5a_3x3'
 			endPoint = endPoints[endPointName]
 			encShape = tf.shape(endPoint)
-			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+			if options.concatenateFeatureMaps:
+				out = tf.concat((tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True), endPoint), axis=-1)
+			else:
+				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
@@ -316,7 +334,10 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 			endPointName = 'Conv2d_4a_3x3'
 			endPoint = endPoints[endPointName]
 			encShape = tf.shape(endPoint)
-			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+			if options.concatenateFeatureMaps:
+				out = tf.concat((tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True), endPoint), axis=-1)
+			else:
+				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
@@ -326,7 +347,10 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 			endPointName = 'Conv2d_2b_3x3'
 			endPoint = endPoints[endPointName]
 			encShape = tf.shape(endPoint)
-			out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
+			if options.concatenateFeatureMaps:
+				out = tf.concat((tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True), endPoint), axis=-1)
+			else:
+				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
 
@@ -337,6 +361,7 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 		outRow = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions
 		outCol = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions
 	return outRow, outCol
+
 
 # Create dataset objects
 trainDataset = loadDataset(options.trainFileName, dataAugmentation=True)
@@ -384,7 +409,8 @@ with tf.name_scope('Model'):
 # TODO: Attach the decoder to the encoder
 print (endPoints.keys())
 if options.useSkipConnections:
-	print ("Adding skip connections from the encoder to the decoder!")
+	print ("Adding skip connections %s from the encoder to the decoder!" % ("via concatenation" if options.concatenateFeatureMaps else "via point-wise summation"))
+
 predictedRowLogits, predictedColLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
 predictedRowMask = tf.expand_dims(tf.argmax(predictedRowLogits, axis=-1), -1, name="predictedRowMask")
 predictedColMask = tf.expand_dims(tf.argmax(predictedColLogits, axis=-1), -1, name="predictedColMask")
@@ -651,10 +677,11 @@ if options.testModel:
 						booleanMask = mask[0, :, :, 0] == (options.numClasses - 1)
 						newImage = np.zeros(booleanMask.shape, dtype=np.uint8)
 						newImage[booleanMask] = 255
-						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations = 1)
+						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations = 1)
 						edges = cv2.Canny(newImage, 50, 150, apertureSize = 3)
 						# cv2.imwrite('canny.jpg',edges)
-						minVotes = int(newImage.shape[1] / 5.0) # Row rows => width / constantDivisor
+						constantDivisor = 10.0
+						minVotes = int(newImage.shape[1] / constantDivisor) # Row rows => width / constantDivisor
 						if idx == 1: # If column
 							minVotes = int(newImage.shape[0] / 8.0) # For cols => height / constantDivisor
 						lines = cv2.HoughLines(edges, 1, (np.pi if idx == 1 else np.pi / 2), minVotes)
@@ -678,7 +705,8 @@ if options.testModel:
 
 							# Cluster the lines
 							from sklearn.cluster import MeanShift
-							meanShift = MeanShift(bandwidth=15.0)
+							# meanShift = MeanShift(bandwidth=20.0 if len(lines) < 10 else 10.0)
+							meanShift = MeanShift(bandwidth=20.0 if idx == 1 else 12.0) # Higher bandwidth for columns since they are well-separated
 							clusters = meanShift.fit_predict(np.array(lines)[:, 0, :])
 							clusterNumbers = np.unique(clusters)
 							clusterCenters = meanShift.cluster_centers_
