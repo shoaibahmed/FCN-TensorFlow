@@ -15,8 +15,6 @@ The system supports two different models at this point, Inception ResNet v2 and 
 ## TODO:
 
 + **NASNet model:** The system is not yet functional with the NASNet base.
-+ **Skip connections:** The system is not yet integated with skip connections.
-+ **Dense CRF:** Integrate CRF on top of the segmentation to have a smooth posterior distribution.
 + **Load un-encoded images:** The system cannot load unencoded images at this point (TF data loading pipeline) where RGB maps to label values.
 + **ResNeXt:** Add support for the ResNeXt model.
 
