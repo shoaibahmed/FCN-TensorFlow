@@ -76,6 +76,10 @@ parser.add_option("--useDeformableConvolution", action="store_true", dest="useDe
 parser.add_option("--performBoundaryDetection", action="store_true", dest="performBoundaryDetection", default=False, help="Perform boundary detection using Hough line transform")
 parser.add_option("--useCRFPostProcessing", action="store_true", dest="useCRFPostProcessing", default=False, help="Use CRF based post-processing")
 
+# Extra features
+parser.add_option("--adversarialExamples", action="store_true", dest="adversarialExamples", default=False, help="Generate adversarial examples")
+parser.add_option("--inverseOptimization", action="store_true", dest="inverseOptimization", default=False, help="Perform inverse optimization to generate images from mask")
+
 # Parse command line options
 (options, args) = parser.parse_args()
 
@@ -220,6 +224,7 @@ def dataAugmentationFunction(imgFileName, img, rowMask, colMask):
 
 	img = tf.image.random_brightness(img, max_delta=32.0 / 255.0)
 	img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
+	img = tf.image.random_contrast(img, lower=0.5, upper=1.5)
 
 	# Make sure the image is still in [0, 255]
 	img = tf.clip_by_value(img, 0.0, 255.0)
@@ -295,7 +300,7 @@ def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', over
 			cv2.imwrite(outputFileName, mask)
 
 # Performs the upsampling of the given images
-def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same'):
+def attachDecoder(net, endPoints, inputShape, trainModel, activation=tf.nn.leaky_relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same', batchNorm=True):
 	if options.useDeformableConvolution:
 		# Attach deformable convolution head here
 		import tensorlayer
@@ -306,6 +311,9 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 
 	with tf.name_scope('Decoder'), tf.variable_scope('Decoder'):
 		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_1')
+
 		if options.useSkipConnections:
 			endPointName = 'Mixed_6a'
 			endPoint = endPoints[endPointName]
@@ -316,8 +324,13 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_2')
 
 		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_3')
+
 		if options.useSkipConnections:
 			endPointName = 'MaxPool_5a_3x3'
 			endPoint = endPoints[endPointName]
@@ -328,8 +341,13 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_4')
 
 		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_5')
+
 		if options.useSkipConnections:
 			endPointName = 'Conv2d_4a_3x3'
 			endPoint = endPoints[endPointName]
@@ -340,8 +358,13 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_6')
 
 		out = tf.layers.conv2d_transpose(activation(out), numFilters, filterSize, strides=strides, padding='valid')
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_7')
+
 		if options.useSkipConnections:
 			# out = out + tf.layers.conv2d(endPoints['Conv2d_2b_3x3'], numFilters, (1, 1), strides=(1, 1), padding='same')
 			endPointName = 'Conv2d_2b_3x3'
@@ -353,13 +376,32 @@ def attachDecoder(net, endPoints, inputShape, activation=tf.nn.relu, numFilters=
 				out = tf.image.resize_bilinear(out, [encShape[1], encShape[2]], align_corners=True) + tf.layers.conv2d(endPoint, numFilters, (1, 1), strides=(1, 1), padding='same')
 
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding=padding)
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_8')
 
 		# Match dimensions (convolutions with 'valid' padding reducing the dimensions)
 		out = tf.image.resize_bilinear(out, [inputShape[1], inputShape[2]], align_corners=True) # TODO: Is it useful or it doesn't matter?
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding='same')
+		if batchNorm:
+			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_9')
 
-		outRow = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions
-		outCol = tf.layers.conv2d(activation(out), options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions
+		outRow = tf.layers.conv2d(activation(out), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for row
+		outCol = tf.layers.conv2d(activation(out), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for column
+		if batchNorm:
+			outRow = tf.layers.batch_normalization(outRow, training=trainModel, name='decoder_bn_row_1')
+			outCol = tf.layers.batch_normalization(outCol, training=trainModel, name='decoder_bn_col_1')
+
+		outRowTwo = tf.layers.conv2d(activation(outRow), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for row
+		outColTwo = tf.layers.conv2d(activation(outCol), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for column
+		if batchNorm:
+			outRowTwo = tf.layers.batch_normalization(outRowTwo, training=trainModel, name='decoder_bn_row_2')
+			outColTwo = tf.layers.batch_normalization(outColTwo, training=trainModel, name='decoder_bn_col_2')
+
+		outRow = tf.concat([outRow, activation(outRowTwo)], axis=-1)
+		outCol = tf.concat([outCol, activation(outColTwo)], axis=-1)
+
+		outRow = tf.layers.conv2d(outRow, options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for row
+		outCol = tf.layers.conv2d(outCol, options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for column
 	return outRow, outCol
 
 
@@ -381,10 +423,16 @@ print ("Data shape: %s | Row mask shape: %s | Column mask shape: %s" % (str(inpu
 
 # if options.trainModel:
 with tf.name_scope('Model'):
-	# Scaling only for NASNet and IncResV2
-	scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImages)
-	scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
-	scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
+	if options.inverseOptimization:
+		inputBatchRowMasks = tf.placeholder(tf.float32, shape=[])
+		scaledInputBatchImages = tf.Variable(initial_value=tf.zeros_like(inputBatchImages), trainable=True, dtype=tf.float32, validate_shape=False) # Same size as the mask
+
+	else:
+		# Scaling only for NASNet and IncResV2
+		scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImages)
+		scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
+		scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
+
 
 	# Create model
 	if options.modelName == "NASNet":
@@ -411,7 +459,7 @@ print (endPoints.keys())
 if options.useSkipConnections:
 	print ("Adding skip connections %s from the encoder to the decoder!" % ("via concatenation" if options.concatenateFeatureMaps else "via point-wise summation"))
 
-predictedRowLogits, predictedColLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages))
+predictedRowLogits, predictedColLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages), options.trainModel)
 predictedRowMask = tf.expand_dims(tf.argmax(predictedRowLogits, axis=-1), -1, name="predictedRowMask")
 predictedColMask = tf.expand_dims(tf.argmax(predictedColLogits, axis=-1), -1, name="predictedColMask")
 
@@ -442,13 +490,19 @@ with tf.name_scope('Loss'):
 
 with tf.name_scope('Optimizer'):
 	# Define Optimizer
-	optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate)
+	if options.inverseOptimization:
+		optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate).minimize(loss, var_list=[scaledInputBatchImages]) # Var list contains the input image proxy variable
+	else:
+		optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate)
 
-	# Op to calculate every variable gradient
-	gradients = tf.gradients(loss, tf.trainable_variables())
-	gradients = list(zip(gradients, tf.trainable_variables()))
-	# Op to update all variables according to their gradient
-	applyGradients = optimizer.apply_gradients(grads_and_vars=gradients)
+		# Op to calculate every variable gradient
+		gradients = tf.gradients(loss, tf.trainable_variables())
+		gradients = list(zip(gradients, tf.trainable_variables()))
+
+		# Op to update all variables according to their gradient
+		updateOps = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+		with tf.control_dependencies(updateOps):
+			applyGradients = optimizer.apply_gradients(grads_and_vars=gradients)
 
 # Initializing the variables
 init = tf.global_variables_initializer()
@@ -680,7 +734,7 @@ if options.testModel:
 						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations = 1)
 						edges = cv2.Canny(newImage, 50, 150, apertureSize = 3)
 						# cv2.imwrite('canny.jpg',edges)
-						constantDivisor = 10.0
+						constantDivisor = 6.0
 						minVotes = int(newImage.shape[1] / constantDivisor) # Row rows => width / constantDivisor
 						if idx == 1: # If column
 							minVotes = int(newImage.shape[0] / 8.0) # For cols => height / constantDivisor
@@ -706,7 +760,7 @@ if options.testModel:
 							# Cluster the lines
 							from sklearn.cluster import MeanShift
 							# meanShift = MeanShift(bandwidth=20.0 if len(lines) < 10 else 10.0)
-							meanShift = MeanShift(bandwidth=20.0 if idx == 1 else 12.0) # Higher bandwidth for columns since they are well-separated
+							meanShift = MeanShift(bandwidth=20.0 if idx == 1 else 10.0) # Higher bandwidth for columns since they are well-separated
 							clusters = meanShift.fit_predict(np.array(lines)[:, 0, :])
 							clusterNumbers = np.unique(clusters)
 							clusterCenters = meanShift.cluster_centers_
