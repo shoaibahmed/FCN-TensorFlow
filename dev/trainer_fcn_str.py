@@ -6,23 +6,32 @@ import sys
 import cv2
 import numpy as np
 from optparse import OptionParser
-import datetime as dt
+import pandas as pd
 
 import tensorflow.contrib.slim as slim
 import tensorflow as tf
-from tensorflow.python.platform import gfile
+import tensorlayer as tl
 
 import shutil
 import wget
 import tarfile
+import datetime
+
+import pydensecrf.densecrf as dcrf
+
+from stats import getBoundingBoxes, saveStatistics, drawBoundingBoxes, computeStatistics
+
 
 # Constants
 TRAIN = 0
 VAL = 1
 TEST = 2
 
-COLORS = np.array([[0, 0, 0], [0, 128, 0], [0, 0, 128], [192, 224, 224]]) # RGB
-LABELS = np.array([0, 1, 1, 2]) # Give high weight to the boundary
+COLORS = np.array([[0, 0, 0], [0, 128, 0], [0, 0, 128], [192, 224, 224]])  # RGB
+LABELS = np.array([0, 1, 1, 2])  # Give high weight to the boundary
+
+CLASSES = ['row', 'column']
+IoU_THRESHOLDS = ['0.5']
 
 # Command line options
 parser = OptionParser()
@@ -48,7 +57,9 @@ parser.add_option("--numParallelLoaders", action="store", type="int", dest="numP
 
 # Trainer Params
 parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate")
-parser.add_option("--weightDecayLambda", action="store", type="float", dest="weightDecayLambda", default=5e-5, help="Weight Decay Lambda")
+parser.add_option("--lrReductionFactor", action="store", type="float", dest="lrReductionFactor", default=0.5, help="Reduction factor for learning rate")
+parser.add_option("--lrReductionTolerance", action="store", type="int", dest="lrReductionTolerance", default=100, help="Number of iterations to wait before reducing the learning rate")
+parser.add_option("--weightDecayLambda", action="store", type="float", dest="weightDecayLambda", default=5e-5, help="Weight decay lambda")
 parser.add_option("--trainingEpochs", action="store", type="int", dest="trainingEpochs", default=5, help="Training epochs")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size")
 parser.add_option("--displayStep", action="store", type="int", dest="displayStep", default=5, help="Progress display step")
@@ -62,8 +73,9 @@ parser.add_option("--testImagesOutputDirectory", action="store", type="string", 
 # Directories
 parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs-str", help="Directory for saving logs")
 parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
-parser.add_option("--outputModelDir", action="store", type="string", dest="outputModelDir", default="./output-str/", help="Directory for saving the model")
+parser.add_option("--outputModelDir", action="store", type="string", dest="outputModelDir", default="./output-str", help="Directory for saving the model")
 parser.add_option("--outputModelName", action="store", type="string", dest="outputModelName", default="Model", help="Name to be used for saving the model")
+parser.add_option("--experimentName", action="store", type="string", dest="experimentName", default="exp01", help="Name of the experiment")
 
 # Network Params
 parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2"], help="Name of the model to be used")
@@ -85,13 +97,16 @@ parser.add_option("--inverseOptimization", action="store_true", dest="inverseOpt
 
 # Verification
 assert options.batchSize == 1, "Error: Only batch size of 1 is supported due to aspect aware scaling!"
-try:
-	import pydensecrf.densecrf as dcrf
-except:
-	# print("Error: Failed to import pydensecrf! CRF post-processing will not work.")
-	assert not options.useCRFPostProcessing, "Error: Failed to import pydensecrf!"
 
-options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName + "_concat" if options.concatenateFeatureMaps else "_sum")
+# Append the experiment name to the output dir
+if os.path.exists(options.experimentName):
+	shutil.rmtree(options.experimentName)
+os.mkdir(options.experimentName)
+
+options.outputModelDir = os.path.join(options.experimentName, options.outputModelDir)
+options.logsDir = os.path.join(options.experimentName, options.logsDir)
+
+options.outputModelDir = os.path.join(options.outputModelDir, "trained-" + options.modelName + ("_concat" if options.concatenateFeatureMaps else "_sum"))
 options.outputModelName = options.outputModelName + "_" + options.modelName
 if options.useDeformableConvolution:
 	options.outputModelDir += "_deform"
@@ -101,25 +116,25 @@ options.trainImagesOutputDirectory = os.path.join(options.outputModelDir, option
 options.valImagesOutputDirectory = os.path.join(options.outputModelDir, options.valImagesOutputDirectory)
 options.testImagesOutputDirectory = os.path.join(options.outputModelDir, options.testImagesOutputDirectory)
 
-print (options)
+print(options)
 
 # Check if the pretrained directory exists
 if not os.path.exists(options.pretrainedModelsDir):
-	print ("Warning: Pretrained models directory not found!")
+	print("Warning: Pretrained models directory not found!")
 	os.makedirs(options.pretrainedModelsDir)
 	assert os.path.exists(options.pretrainedModelsDir)
 
 # Clone the repository if not already existent
 if not os.path.exists(os.path.join(options.pretrainedModelsDir, "models/research/slim")):
-	print ("Cloning TensorFlow models repository")
-	import git # gitpython
+	print("Cloning TensorFlow models repository")
+	import git  # gitpython
 
 	class Progress(git.remote.RemoteProgress):
 		def update(self, op_code, cur_count, max_count=None, message=''):
-			print (self._cur_line)
+			print(self._cur_line)
 
 	git.Repo.clone_from("https://github.com/tensorflow/models.git", os.path.join(options.pretrainedModelsDir, "models"), progress=Progress())
-	print ("Repository sucessfully cloned!")
+	print("Repository sucessfully cloned!")
 
 # Add the path to the tensorflow models repository
 sys.path.append(os.path.join(options.pretrainedModelsDir, "models/research/slim"))
@@ -131,13 +146,13 @@ import nasnet.nasnet as nasnet
 
 # Import FCN Model
 if options.modelName == "NASNet":
-	print ("Downloading pretrained NASNet model")
+	print("Downloading pretrained NASNet model")
 	nasCheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, options.modelName, 'model.ckpt')
 	if not os.path.isfile(nasCheckpointFile + '.index'):
 		# Download file from the link
 		url = 'https://storage.googleapis.com/download.tensorflow.org/models/nasnet-a_large_04_10_2017.tar.gz'
 		fileName = wget.download(url, options.pretrainedModelsDir)
-		print ("File downloaded: %s" % fileName)
+		print("File downloaded: %s" % fileName)
 
 		# Extract the tar file
 		tar = tarfile.open(fileName)
@@ -148,13 +163,13 @@ if options.modelName == "NASNet":
 	# options.imageHeight = options.imageWidth = 331
 
 elif options.modelName == "IncResV2":
-	print ("Downloading pretrained Inception ResNet v2 model")
+	print("Downloading pretrained Inception ResNet v2 model")
 	incResV2CheckpointFile = checkpointFileName = os.path.join(options.pretrainedModelsDir, options.modelName, 'inception_resnet_v2_2016_08_30.ckpt')
 	if not os.path.isfile(incResV2CheckpointFile):
 		# Download file from the link
 		url = 'http://download.tensorflow.org/models/inception_resnet_v2_2016_08_30.tar.gz'
 		fileName = wget.download(url, options.pretrainedModelsDir)
-		print ("File downloaded: %s" % fileName)
+		print("File downloaded: %s" % fileName)
 
 		# Extract the tar file
 		tar = tarfile.open(fileName)
@@ -165,18 +180,19 @@ elif options.modelName == "IncResV2":
 	# options.imageHeight = options.imageWidth = 299
 
 else:
-	print ("Error: Model not found!")
-	exit (-1)
+	print("Error: Model not found!")
+	exit(-1)
 
 # Reads an image from a file, decodes it into a dense tensor
 def parseFunction(imgFileName, rowMaskImageName, colMaskImageName):
 	# TODO: Replace with decode_image (decode_image doesn't return shape)
 	# Load the original image
 	imageString = tf.read_file(imgFileName)
-	img = tf.image.decode_jpeg(imageString)
+	# img = tf.image.decode_jpeg(imageString)
+	img = tf.image.decode_png(imageString)
 	img = tf.image.resize_images(img, [options.maxImageSize, options.maxImageSize], preserve_aspect_ratio=True)
 	img.set_shape([None, None, options.imageChannels])
-	img = tf.cast(img, tf.float32) # Convert to float tensor
+	img = tf.cast(img, tf.float32)  # Convert to float tensor
 
 	# Load the segmentation mask
 	imageString = tf.read_file(rowMaskImageName)
@@ -202,29 +218,28 @@ def parseFunction(imgFileName, rowMaskImageName, colMaskImageName):
 	# 		mask = tf.to_float(tf.stack(semanticMap, axis=-1))
 
 	rowMask = tf.image.resize_images(rowMask, [options.maxImageSize, options.maxImageSize], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
-	rowMask = tf.cast(rowMask, tf.int32) # Convert to float tensor
+	rowMask = tf.cast(rowMask, tf.int32)  # Convert to float tensor
 
 	colMask = tf.image.resize_images(colMask, [options.maxImageSize, options.maxImageSize], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR, preserve_aspect_ratio=True)
-	colMask = tf.cast(colMask, tf.int32) # Convert to float tensor
+	colMask = tf.cast(colMask, tf.int32)  # Convert to float tensor
 
 	return imgFileName, img, rowMask, colMask
 
 def dataAugmentationFunction(imgFileName, img, rowMask, colMask):
 	with tf.name_scope('flipLR'):
-		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[]) # Random variable: two possible outcomes (0 or 1)
+		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[])  # Random variable: two possible outcomes (0 or 1)
 		img = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_left_right(img), false_fn=lambda: img)
 		rowMask = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_left_right(rowMask), false_fn=lambda: rowMask)
 		colMask = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_left_right(colMask), false_fn=lambda: colMask)
 
 	with tf.name_scope('flipUD'):
-		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[]) # Random variable: two possible outcomes (0 or 1)
+		randomVar = tf.random_uniform(maxval=2, dtype=tf.int32, shape=[])  # Random variable: two possible outcomes (0 or 1)
 		img = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_up_down(img), false_fn=lambda: img)
 		rowMask = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_up_down(rowMask), false_fn=lambda: rowMask)
 		colMask = tf.cond(pred=tf.equal(randomVar, 0), true_fn=lambda: tf.image.flip_up_down(colMask), false_fn=lambda: colMask)
 
 	img = tf.image.random_brightness(img, max_delta=32.0 / 255.0)
 	img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
-	img = tf.image.random_contrast(img, lower=0.5, upper=1.5)
 
 	# Make sure the image is still in [0, 255]
 	img = tf.clip_by_value(img, 0.0, 255.0)
@@ -232,8 +247,8 @@ def dataAugmentationFunction(imgFileName, img, rowMask, colMask):
 	return imgFileName, img, rowMask, colMask
 
 def loadDataset(currentDataFile, dataAugmentation=False):
-	print ("Loading data from file: %s" % (currentDataFile))
-	dataClasses = {}
+	print("Loading data from file: %s" % currentDataFile)
+
 	with open(currentDataFile) as f:
 		imageFileNames = f.readlines()
 		originalImageNames = []
@@ -251,8 +266,8 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 		colMaskImageNames = tf.constant(colMaskImageNames)
 
 	numFiles = len(imageFileNames)
-	print ("Dataset loaded")
-	print ("Number of files found: %d" % (numFiles))
+	print("Dataset loaded")
+	print("Number of files found: %d" % numFiles)
 
 	dataset = tf.data.Dataset.from_tensor_slices((originalImageNames, rowMaskImageNames, colMaskImageNames))
 	dataset = dataset.map(parseFunction, num_parallel_calls=options.numParallelLoaders)
@@ -271,7 +286,7 @@ def loadDataset(currentDataFile, dataAugmentation=False):
 
 def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', overlay=True):
 	fileName = fileName[0].decode("utf-8") 
-	_, fileName = os.path.split(fileName) # Crop the complete path name
+	_, fileName = os.path.split(fileName)  # Crop the complete path name
 	if img is not None:
 		img = img[0]
 	rowMask = rowMask[0]
@@ -281,7 +296,7 @@ def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', over
 	for maskName, mask in zip(["-row", "-col"], [rowMask, colMask]):
 		outputFileName = os.path.join(directory, fileNameRoot + maskName + append + fileNameExt)
 		if options.debug:
-			print ("Saving predicted segmentation mask:", outputFileName)
+			print("Saving predicted segmentation mask:", outputFileName)
 
 		if img is not None:
 			rgbMask = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.float32)
@@ -299,15 +314,15 @@ def writeMaskToImage(img, rowMask, colMask, directory, fileName, append='', over
 		else:
 			cv2.imwrite(outputFileName, mask)
 
+
 # Performs the upsampling of the given images
 def attachDecoder(net, endPoints, inputShape, trainModel, activation=tf.nn.leaky_relu, numFilters=256, filterSize=(3, 3), strides=(2, 2), padding='same', batchNorm=True):
 	if options.useDeformableConvolution:
 		# Attach deformable convolution head here
-		import tensorlayer
 		with tf.name_scope('DeformableConv'):
 			net = activation(net)
-			offset1 = tl.layers.Conv2d(net, 18, (3, 3), (1, 1), act=act, padding='SAME', name='offset')
-			net = tl.layers.DeformableConv2d(net, offset1, numFilters, (3, 3), act=act, name='deformable')
+			offset1 = tl.layers.Conv2d(net, 18, (3, 3), (1, 1), act=activation, padding='SAME', name='offset')
+			net = tl.layers.DeformableConv2d(net, offset1, numFilters, (3, 3), act=activation, name='deformable')
 
 	with tf.name_scope('Decoder'), tf.variable_scope('Decoder'):
 		out = tf.layers.conv2d_transpose(activation(net), numFilters, filterSize, strides=strides, padding='valid')
@@ -380,28 +395,31 @@ def attachDecoder(net, endPoints, inputShape, trainModel, activation=tf.nn.leaky
 			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_8')
 
 		# Match dimensions (convolutions with 'valid' padding reducing the dimensions)
-		out = tf.image.resize_bilinear(out, [inputShape[1], inputShape[2]], align_corners=True) # TODO: Is it useful or it doesn't matter?
+		out = tf.image.resize_bilinear(out, [inputShape[1], inputShape[2]], align_corners=True)  # TODO: Verify if it is useful or not?
 		out = tf.layers.conv2d(activation(out), numFilters, filterSize, strides=(1, 1), padding='same')
 		if batchNorm:
 			out = tf.layers.batch_normalization(out, training=trainModel, name='decoder_bn_9')
 
-		outRow = tf.layers.conv2d(activation(out), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for row
-		outCol = tf.layers.conv2d(activation(out), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for column
+		outRow = tf.layers.conv2d(activation(out), 64, filterSize, strides=(1, 1), padding=padding)  # Obtain per pixel predictions for row
+		outCol = tf.layers.conv2d(activation(out), 64, filterSize, strides=(1, 1), padding=padding)  # Obtain per pixel predictions for column
 		if batchNorm:
 			outRow = tf.layers.batch_normalization(outRow, training=trainModel, name='decoder_bn_row_1')
 			outCol = tf.layers.batch_normalization(outCol, training=trainModel, name='decoder_bn_col_1')
 
-		outRowTwo = tf.layers.conv2d(activation(outRow), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for row
-		outColTwo = tf.layers.conv2d(activation(outCol), 64, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for column
-		if batchNorm:
-			outRowTwo = tf.layers.batch_normalization(outRowTwo, training=trainModel, name='decoder_bn_row_2')
-			outColTwo = tf.layers.batch_normalization(outColTwo, training=trainModel, name='decoder_bn_col_2')
+		largeHead = True
+		if largeHead:
+			outRowTwo = tf.layers.conv2d(activation(outRow), 64, filterSize, strides=(1, 1), padding=padding)  # Obtain per pixel predictions for row
+			outColTwo = tf.layers.conv2d(activation(outCol), 64, filterSize, strides=(1, 1), padding=padding)  # Obtain per pixel predictions for column
+			if batchNorm:
+				outRowTwo = tf.layers.batch_normalization(outRowTwo, training=trainModel, name='decoder_bn_row_2')
+				outColTwo = tf.layers.batch_normalization(outColTwo, training=trainModel, name='decoder_bn_col_2')
 
-		outRow = tf.concat([outRow, activation(outRowTwo)], axis=-1)
-		outCol = tf.concat([outCol, activation(outColTwo)], axis=-1)
+			outRow = tf.concat([outRow, activation(outRowTwo)], axis=-1)
+			outCol = tf.concat([outCol, activation(outColTwo)], axis=-1)
 
-		outRow = tf.layers.conv2d(outRow, options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for row
-		outCol = tf.layers.conv2d(outCol, options.numClasses, filterSize, strides=(1, 1), padding=padding) # Obtain per pixel predictions for column
+		outRow = tf.layers.conv2d(outRow, options.numClasses, filterSize, strides=(1, 1), padding=padding)  # Obtain per pixel predictions for row
+		outCol = tf.layers.conv2d(outCol, options.numClasses, filterSize, strides=(1, 1), padding=padding)  # Obtain per pixel predictions for column
+
 	return outRow, outCol
 
 
@@ -419,20 +437,19 @@ testIterator = testDataset.make_initializable_iterator()
 datasetSelectionPlaceholder = tf.placeholder(dtype=tf.int32, shape=(), name='DatasetSelectionPlaceholder')
 inputBatchImageNames, inputBatchImages, inputBatchRowMasks, inputBatchColMasks = tf.cond(tf.equal(datasetSelectionPlaceholder, TRAIN), lambda: trainIterator.get_next(), 
 															lambda: tf.cond(tf.equal(datasetSelectionPlaceholder, VAL), lambda: valIterator.get_next(), lambda: testIterator.get_next()))
-print ("Data shape: %s | Row mask shape: %s | Column mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchRowMasks.get_shape()), str(inputBatchColMasks.get_shape())))
+print("Data shape: %s | Row mask shape: %s | Column mask shape: %s" % (str(inputBatchImages.get_shape()), str(inputBatchRowMasks.get_shape()), str(inputBatchColMasks.get_shape())))
 
 # if options.trainModel:
 with tf.name_scope('Model'):
 	if options.inverseOptimization:
 		inputBatchRowMasks = tf.placeholder(tf.float32, shape=[])
-		scaledInputBatchImages = tf.Variable(initial_value=tf.zeros_like(inputBatchImages), trainable=True, dtype=tf.float32, validate_shape=False) # Same size as the mask
+		scaledInputBatchImages = tf.Variable(initial_value=tf.zeros_like(inputBatchImages), trainable=True, dtype=tf.float32, validate_shape=False)  # Same size as the mask
 
 	else:
 		# Scaling only for NASNet and IncResV2
 		scaledInputBatchImages = tf.scalar_mul((1.0 / 255.0), inputBatchImages)
 		scaledInputBatchImages = tf.subtract(scaledInputBatchImages, 0.5)
 		scaledInputBatchImages = tf.multiply(scaledInputBatchImages, 2.0)
-
 
 	# Create model
 	if options.modelName == "NASNet":
@@ -446,18 +463,17 @@ with tf.name_scope('Model'):
 			# logits, endPoints = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
 			with tf.variable_scope('InceptionResnetV2', 'InceptionResnetV2', [scaledInputBatchImages], reuse=None) as scope:
 				with slim.arg_scope([slim.batch_norm, slim.dropout], is_training=False):
-				  net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
+					net, endPoints = inception_resnet_v2.inception_resnet_v2_base(scaledInputBatchImages, scope=scope, activation_fn=tf.nn.relu)
 
 		variablesToRestore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
 
 	else:
-		print ("Error: Model not found!")
-		exit (-1)
+		print("Error: Model not found!")
+		exit(-1)
 
-# TODO: Attach the decoder to the encoder
-print (endPoints.keys())
+print(endPoints.keys())
 if options.useSkipConnections:
-	print ("Adding skip connections %s from the encoder to the decoder!" % ("via concatenation" if options.concatenateFeatureMaps else "via point-wise summation"))
+	print("Adding skip connections %s from the encoder to the decoder!" % ("via concatenation" if options.concatenateFeatureMaps else "via point-wise summation"))
 
 predictedRowLogits, predictedColLogits = attachDecoder(net, endPoints, tf.shape(scaledInputBatchImages), options.trainModel)
 predictedRowMask = tf.expand_dims(tf.argmax(predictedRowLogits, axis=-1), -1, name="predictedRowMask")
@@ -489,11 +505,13 @@ with tf.name_scope('Loss'):
 	loss = tf.add(crossEntropyLoss, regLoss, name="totalLoss")
 
 with tf.name_scope('Optimizer'):
+	lrPlaceholder = tf.placeholder(tf.float64, shape=(), name="lrPlaceholder")
+
 	# Define Optimizer
 	if options.inverseOptimization:
-		optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate).minimize(loss, var_list=[scaledInputBatchImages]) # Var list contains the input image proxy variable
+		optimizer = tf.train.AdamOptimizer(learning_rate=lrPlaceholder).minimize(loss, var_list=[scaledInputBatchImages])  # Var list contains the input image proxy variable
 	else:
-		optimizer = tf.train.AdamOptimizer(learning_rate=options.learningRate)
+		optimizer = tf.train.AdamOptimizer(learning_rate=lrPlaceholder)
 
 		# Op to calculate every variable gradient
 		gradients = tf.gradients(loss, tf.trainable_variables())
@@ -510,6 +528,7 @@ init_local = tf.local_variables_initializer()
 
 if options.tensorboardVisualization:
 	# Create a summary to monitor cost tensor
+	tf.summary.scalar("learning_rate", lrPlaceholder)
 	tf.summary.scalar("cross_entropy_row", crossEntropyLossRow)
 	tf.summary.scalar("cross_entropy_col", crossEntropyLossCol)
 	tf.summary.scalar("cross_entropy", crossEntropyLoss)
@@ -519,6 +538,7 @@ if options.tensorboardVisualization:
 	# Create summaries to visualize weights
 	for var in tf.trainable_variables():
 		tf.summary.histogram(var.name, var)
+
 	# Summarize all gradients
 	for grad, var in gradients:
 		if grad is not None:
@@ -532,7 +552,7 @@ saver = tf.train.Saver()
 
 # GPU config
 config = tf.ConfigProto()
-config.gpu_options.allow_growth=True
+config.gpu_options.allow_growth = True
 
 # Train model
 if options.trainModel:
@@ -542,7 +562,7 @@ if options.trainModel:
 		sess.run(init_local)
 
 		if options.startTrainingFromScratch:
-			print ("Removing previous checkpoints and logs")
+			print("Removing previous checkpoints and logs")
 			if os.path.exists(options.logsDir): 
 				shutil.rmtree(options.logsDir)
 			if os.path.exists(options.trainImagesOutputDirectory): 
@@ -565,7 +585,7 @@ if options.trainModel:
 
 		# Restore checkpoint
 		else:
-			print ("Restoring from checkpoint")
+			print("Restoring from checkpoint")
 			saver = tf.train.import_meta_graph(os.path.join(options.outputModelDir, options.outputModelName + ".meta"))
 			saver.restore(sess, os.path.join(options.outputModelDir, options.outputModelName))
 
@@ -573,67 +593,90 @@ if options.trainModel:
 			# Op for writing logs to Tensorboard
 			summaryWriter = tf.summary.FileWriter(options.logsDir, graph=tf.get_default_graph())
 
-		print ("Starting network training")
+		print("Starting network training")
+		trainStartTime = datetime.datetime.now()
+		learningRate = options.learningRate
 		globalStep = 0
 
 		# Keep training until reach max iterations
 		for epoch in range(options.trainingEpochs):
 			# Initialize the dataset iterators
 			sess.run(trainIterator.initializer)
+
+			epochStartTime = datetime.datetime.now()
+			bestTrainLoss = sys.float_info.max
+			toleranceCounter = 0
+			step = 0
 			
 			try:
-				step = 0
 				while True:
+					iterationStartTime = datetime.datetime.now()
+
 					# Debug mode
+					feedDict = {datasetSelectionPlaceholder: TRAIN, lrPlaceholder: learningRate}
 					if options.debug:
-						[predRowMask, predColMask, gtRowMask, gtColMask] = sess.run([predictedRowMask, predictedColMask, inputBatchRowMasks, inputBatchColMasks], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						print ("Row | Prediction shape: %s | GT shape: %s" % (str(predRowMask.shape), str(gtRowMask.shape)))
-						print ("Column | Prediction shape: %s | GT shape: %s" % (str(predColMask.shape), str(gtColMask.shape)))
+						[predRowMask, predColMask, gtRowMask, gtColMask] = sess.run([predictedRowMask, predictedColMask, inputBatchRowMasks, inputBatchColMasks], feed_dict=feedDict)
+						print("Row | Prediction shape: %s | GT shape: %s" % (str(predRowMask.shape), str(gtRowMask.shape)))
+						print("Column | Prediction shape: %s | GT shape: %s" % (str(predColMask.shape), str(gtColMask.shape)))
 						assert (predRowMask.shape == gtRowMask.shape), "Error: Prediction and ground-truth row shapes don't match"
 						assert (predColMask.shape == gtColMask.shape), "Error: Prediction and ground-truth col shapes don't match"
 						if np.isnan(np.sum(predRowMask)) or np.isnan(np.sum(predColMask)):
-							print ("Error: NaN encountered!")
-							exit (-1)
+							print("Error: NaN encountered!")
+							exit(-1)
 
-						print ("Unique labels in row prediction:", np.unique(predRowMask))
-						print ("Unique labels in column prediction:", np.unique(predColMask))
-						print ("Unique labels in row GT:", np.unique(gtRowMask))
-						print ("Unique labels in col GT:", np.unique(gtColMask))
+						print("Unique labels in row prediction:", np.unique(predRowMask))
+						print("Unique labels in column prediction:", np.unique(predColMask))
+						print("Unique labels in row GT:", np.unique(gtRowMask))
+						print("Unique labels in col GT:", np.unique(gtColMask))
 
 						# Verify end point shapes
 						for endPointName in endPoints:
-							endPointOutput = sess.run(endPoints[endPointName], feed_dict={datasetSelectionPlaceholder: TRAIN})
-							print ("End point: %s | Shape: %s" % (endPointName, str(endPointOutput.shape)))
+							endPointOutput = sess.run(endPoints[endPointName], feed_dict=feedDict)
+							print("End point: %s | Shape: %s" % (endPointName, str(endPointOutput.shape)))
 
 					# Run optimization op (backprop)
+					endPointNames = [inputBatchImageNames, inputBatchImages, loss, predictedRowMask, predictedColMask, applyGradients]
 					if options.tensorboardVisualization:
-						_, summary = sess.run([applyGradients, mergedSummaryOp], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						summaryWriter.add_summary(summary, global_step=globalStep) # Write logs at every iteration
+						returnedEndpoints = sess.run(endPointNames + [mergedSummaryOp], feed_dict=feedDict)
+						summaryWriter.add_summary(returnedEndpoints[-1], global_step=globalStep)  # Write logs at every iteration
 					else:
-						_ = sess.run(applyGradients, feed_dict={datasetSelectionPlaceholder: TRAIN})
-					
+						returnedEndpoints = sess.run(endPointNames, feed_dict=feedDict)
+
 					if step % options.displayStep == 0:
-						# Calculate batch loss
-						[fileName, originalImage, trainLoss, predictedRowSegMask, predictedColSegMask] = \
-							sess.run([inputBatchImageNames, inputBatchImages, loss, predictedRowMask, predictedColMask], feed_dict={datasetSelectionPlaceholder: TRAIN})
-						print ("Epoch: %d | Iteration: %d | Minibatch Loss: %f" % (epoch, step, trainLoss))
+						fileName, originalImage, trainLoss, predictedRowSegMask, predictedColSegMask, _ = returnedEndpoints[:-1]
+						print("Epoch: %d | Iteration: %d | Mini-batch Loss: %f | Elapsed time: %.2f seconds" % (epoch, step, trainLoss, (datetime.datetime.now() - iterationStartTime).seconds))
 
 						# Save image results
 						writeMaskToImage(originalImage, predictedRowSegMask, predictedColSegMask, options.trainImagesOutputDirectory, fileName)
 
+					trainLoss = returnedEndpoints[2]
+					if trainLoss <= bestTrainLoss:
+						bestTrainLoss = trainLoss
+						toleranceCounter = 0
+
 					step += 1
 					globalStep += 1
+					toleranceCounter += 1
+
+					# Learning rate reduction step
+					if toleranceCounter > options.lrReductionTolerance:
+						# Reduce learning rate
+						oldLR = learningRate
+						learningRate = learningRate / options.lrReductionFactor
+						print("Learning rate reduced from %f to %f" % (oldLR, learningRate))
+						toleranceCounter = 0
 
 			except tf.errors.OutOfRangeError:
-				print('Done training for %d epochs, %d steps.' % (epoch, step))
+				print("Done training for %d epochs, %d steps. Elapsed time: %.2f minutes" % (epoch, step, ((datetime.datetime.now() - epochStartTime).seconds) / 60.0))
 
 			if step % options.saveStep == 0:
 				# Save model weights to disk
 				outputFileName = os.path.join(options.outputModelDir, options.outputModelName)
 				saver.save(sess, outputFileName)
-				print ("Model saved: %s" % (outputFileName))
+				print("Model saved: %s" % outputFileName)
 
 			# Check the accuracy on validation set
+			valStartTime = datetime.datetime.now()
 			sess.run(valIterator.initializer)
 			averageValLoss = 0.0
 			iterations = 0
@@ -645,15 +688,16 @@ if options.trainModel:
 					# Save image results
 					writeMaskToImage(originalImage, predictedRowSegMask, predictedColSegMask, options.valImagesOutputDirectory, fileName)
 
-					print ("Iteration: %d | Validation loss: %f" % (iterations, valLoss))
+					if iterations % options.displayStep == 0:
+						print("Validation set performance | Iteration: %d | Validation loss: %f" % (iterations, valLoss))
 					averageValLoss += valLoss
 					iterations += 1
 
 			except tf.errors.OutOfRangeError:
-				print('Evaluation on validation set completed!')
+				print("Evaluation on validation set completed! Elapsed time: %.2f seconds" % (datetime.datetime.now() - valStartTime).seconds)
 
 			averageValLoss /= iterations
-			print('Average validation loss: %f' % (averageValLoss))
+			print("Average validation loss: %f" % averageValLoss)
 
 			# # Check the accuracy on test data
 			# if step % options.saveStepBest == 0:
@@ -673,9 +717,10 @@ if options.trainModel:
 		# Save final model weights to disk
 		outputFileName = os.path.join(options.outputModelDir, options.outputModelName)
 		saver.save(sess, outputFileName)
-		print ("Model saved: %s" % (outputFileName))
+		print("Model saved: %s" % outputFileName)
 
 		# Report loss on test data
+		testStartTime = datetime.datetime.now()
 		sess.run(testIterator.initializer)
 		averageTestLoss = 0.0
 		iterations = 0
@@ -687,26 +732,44 @@ if options.trainModel:
 				# Save image results
 				writeMaskToImage(originalImage, predictedRowSegMask, predictedColSegMask, options.testImagesOutputDirectory, fileName)
 
-				print ("Iteration: %d | Test loss: %f" % (iterations, testLoss))
+				if iterations % options.displayStep == 0:
+					print("Test set performance | Iteration: %d | Test loss: %f" % (iterations, testLoss))
 				averageTestLoss += testLoss
 				iterations += 1
 
 		except tf.errors.OutOfRangeError:
-			print('Evaluation on test set completed!')
+			print("Evaluation on test set completed! Elapsed time: %.2f seconds" % (datetime.datetime.now() - testStartTime).seconds)
 
 		averageTestLoss /= iterations
-		print('Average test loss: %f' % (averageTestLoss))
+		print("Average test loss: %f" % averageTestLoss)
 
-		print ("Optimization completed!")
+		print("Optimization completed! Total training time: %.2f minutes" % ((datetime.datetime.now() - trainStartTime).seconds / 60.0))
 
 
 if options.testModel:
-	print ("Testing saved model")
+	print("Testing saved model")
 
 	if os.path.exists(options.testImagesOutputDirectory):
 		shutil.rmtree(options.testImagesOutputDirectory)
 	os.makedirs(options.testImagesOutputDirectory)
-	
+
+	bBoxesPath = os.path.join(options.outputModelDir, 'BoundingBoxes')
+	if os.path.exists(bBoxesPath):
+		shutil.rmtree(bBoxesPath)
+	os.makedirs(bBoxesPath)
+
+	statistics = {}
+	for cls_ind, cls in enumerate(CLASSES):
+		statistics[cls] = {}
+		for thresh in IoU_THRESHOLDS:
+			statistics[cls][thresh] = {}
+			statistics[cls][thresh]["truePositives"] = 0
+			statistics[cls][thresh]["falsePositives"] = 0
+			statistics[cls][thresh]["falseNegatives"] = 0
+			statistics[cls][thresh]["precision"] = 0
+			statistics[cls][thresh]["recall"] = 0
+			statistics[cls][thresh]["fMeasure"] = 0
+
 	# Now we make sure the variable is now a constant, and that the graph still produces the expected result.
 	with tf.Session(config=config) as sess:
 		modelFileName = os.path.join(options.outputModelDir, options.outputModelName)
@@ -715,28 +778,41 @@ if options.testModel:
 		sess.run(testIterator.initializer)
 		iterations = 0
 		averageTestLoss = 0.0
+		testStartTime = datetime.datetime.now()
+
 		try:
 			while True:
+				iterationStartTime = datetime.datetime.now()
+
 				[fileName, originalImage, testLoss, predictedRowSegMask, predictedColSegMask, predictedRowSegLogits, predictedColSegLogits] = \
 					sess.run([inputBatchImageNames, inputBatchImages, loss, predictedRowMask, predictedColMask, predictedRowLogits, predictedColLogits], feed_dict={datasetSelectionPlaceholder: TEST})
 
 				# Save image results
 				writeMaskToImage(originalImage, predictedRowSegMask, predictedColSegMask, options.testImagesOutputDirectory, fileName)
 
+				predictedRowSegMask_Copy = np.copy(predictedRowSegMask)
+				predictedColSegMask_Copy = np.copy(predictedColSegMask)
+
 				if options.performBoundaryDetection:
 					processedMasks = []
 					processedImages = []
+
+					rowX1, rowY1 = [], []
+					colX1, colY1 = [], []
+					rowX2, rowY2 = [], []
+					colX2, colY2 = [], []
+
 					for idx, mask in enumerate([predictedRowSegMask, predictedColSegMask]):
-						# Use hough transform to infer lines
+						# Use Hough transform to infer lines
 						booleanMask = mask[0, :, :, 0] == (options.numClasses - 1)
 						newImage = np.zeros(booleanMask.shape, dtype=np.uint8)
 						newImage[booleanMask] = 255
-						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations = 1)
-						edges = cv2.Canny(newImage, 50, 150, apertureSize = 3)
+						newImage = cv2.dilate(newImage, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1)
+						edges = cv2.Canny(newImage, 50, 150, apertureSize=3)
 						# cv2.imwrite('canny.jpg',edges)
-						constantDivisor = 6.0
+						constantDivisor = 10.0
 						minVotes = int(newImage.shape[1] / constantDivisor) # Row rows => width / constantDivisor
-						if idx == 1: # If column
+						if idx == 1:  # If column
 							minVotes = int(newImage.shape[0] / 8.0) # For cols => height / constantDivisor
 						lines = cv2.HoughLines(edges, 1, (np.pi if idx == 1 else np.pi / 2), minVotes)
 						img = originalImage[0].copy()
@@ -755,16 +831,17 @@ if options.testModel:
 									newLines.append(lines[i])
 							
 							lines = newLines
-							print ("Number of lines rejected:", numRejectedLines)
+							print("Number of lines rejected:", numRejectedLines)
 
 							# Cluster the lines
+							# TODO: Silhouette method for the selection of optimal number of clusters
 							from sklearn.cluster import MeanShift
 							# meanShift = MeanShift(bandwidth=20.0 if len(lines) < 10 else 10.0)
-							meanShift = MeanShift(bandwidth=20.0 if idx == 1 else 10.0) # Higher bandwidth for columns since they are well-separated
+							meanShift = MeanShift(bandwidth=20.0 if idx == 1 else 12.0)  # Higher bandwidth for columns since they are well-separated
 							clusters = meanShift.fit_predict(np.array(lines)[:, 0, :])
 							clusterNumbers = np.unique(clusters)
 							clusterCenters = meanShift.cluster_centers_
-							print ("Number of clusters found:", len(clusterNumbers))
+							print("Number of clusters found:", len(clusterNumbers))
 
 							for i in range(0, len(lines)):
 								rho = lines[i][0][0]
@@ -773,28 +850,39 @@ if options.testModel:
 								# 	return
 								a = np.cos(theta)
 								b = np.sin(theta)
-								x0 = a*rho
-								y0 = b*rho
-								x1 = int(x0 + 1000*(-b))
-								y1 = int(y0 + 1000*(a))
-								x2 = int(x0 - 1000*(-b))
-								y2 = int(y0 - 1000*(a))
+								x0 = a * rho
+								y0 = b * rho
+								x1 = int(x0 + 1000 * -b)
+								y1 = int(y0 + 1000 * a)
+								x2 = int(x0 - 1000 * -b)
+								y2 = int(y0 - 1000 * a)
 
-								cv2.line(img,(x1,y1),(x2,y2),(0,255,0),2)
+								cv2.line(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
 							for i in range(0, clusterCenters.shape[0]):
 								rho = clusterCenters[i, 0]
 								theta = clusterCenters[i, 1]
 								a = np.cos(theta)
 								b = np.sin(theta)
-								x0 = a*rho
-								y0 = b*rho
-								x1 = int(x0 + 1000*(-b))
-								y1 = int(y0 + 1000*(a))
-								x2 = int(x0 - 1000*(-b))
-								y2 = int(y0 - 1000*(a))
+								x0 = a * rho
+								y0 = b * rho
+								x1 = int(x0 + 1000 * -b)
+								y1 = int(y0 + 1000 * a)
+								x2 = int(x0 - 1000 * -b)
+								y2 = int(y0 - 1000 * a)
 
-								cv2.line(img,(x1,y1),(x2,y2),(0,0,255),2)
+								cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+								if idx == 1:
+									colX1.append(x1)
+									colY1.append(y1)
+									colX2.append(x2)
+									colY2.append(y2)
+								else:
+									rowX1.append(x1)
+									rowY1.append(y1)
+									rowX2.append(x2)
+									rowY2.append(y2)
 
 						processedMasks.append(img[np.newaxis, :, :, :])
 						processedImages.append(newImage[np.newaxis, :, :, np.newaxis])
@@ -802,7 +890,26 @@ if options.testModel:
 					# Save image results
 					writeMaskToImage(None, processedMasks[0], processedMasks[1], options.testImagesOutputDirectory, fileName, append='-hough')
 					writeMaskToImage(None, processedImages[0], processedImages[1], options.testImagesOutputDirectory, fileName, append='-hough-debug')
-					
+
+					imgFullPath = fileName[0].decode("utf-8")
+					fileNameRoot, fileNameExt = os.path.split(imgFullPath)
+					colData = {'x1': colX1, 'y1': colY1, 'x2': colX2, 'y2': colY2}
+					cols = pd.DataFrame(colData)
+					rowData = {'x1': rowX1, 'y1': rowY1, 'x2': rowX2, 'y2': rowY2}
+					rows = pd.DataFrame(rowData)
+
+					boundingBoxXml = getBoundingBoxes(fileNameExt, rows, cols, predictedRowSegMask_Copy, predictedColSegMask_Copy)
+					statistics = computeStatistics(fileNameExt, boundingBoxXml, statistics, CLASSES, originalImage[0], 'column')
+					statistics = computeStatistics(fileNameExt, boundingBoxXml, statistics, CLASSES, originalImage[0], 'row')
+					drawBoundingBoxes(originalImage, fileNameExt, options.testImagesOutputDirectory, boundingBoxXml, CLASSES)
+
+					annotationPath = os.path.join(bBoxesPath, fileNameExt[:-4] + '.xml')
+
+					print("Started Bounding Box Generation for: " + fileNameExt)
+					with open(annotationPath, 'w') as f:
+						f.write(boundingBoxXml)
+					print("Bounding Box Generated for: " + fileNameExt)
+
 				if options.useCRFPostProcessing:
 					# TODO: Incorporate dense CRF
 					processedMasks = []
@@ -827,14 +934,22 @@ if options.testModel:
 					# Save image results
 					writeMaskToImage(originalImage, processedMasks[0], processedMasks[1], options.testImagesOutputDirectory, fileName, append='-crf')
 				
-				print ("Iteration: %d | Test loss: %f" % (iterations, testLoss))
+				print("Iteration: %d | Test loss: %f | Elapsed time: %.2f seconds" % (iterations, testLoss, (datetime.datetime.now() - iterationStartTime).seconds))
 				averageTestLoss += testLoss
 				iterations += 1
 
 		except tf.errors.OutOfRangeError:
-			print('Evluation on test set completed!')
+			print("Evaluation on test set completed! Elapsed time: %.2f seconds" % (datetime.datetime.now() - testStartTime).seconds)
+
+		print("Saving statistics")
+		statsPath = os.path.join(options.outputModelDir, 'Stats')
+		if os.path.exists(statsPath):
+			shutil.rmtree(statsPath)
+		os.makedirs(statsPath)
+		saveStatistics(statistics, statsPath)
+		print("Statistics saved!")
 
 		averageTestLoss /= iterations
-		print('Average test loss: %f' % (averageTestLoss))
+		print("Average test loss: %f" % averageTestLoss)
 
-	print ("Model evaluation completed!")
+	print("Model evaluation completed!")
